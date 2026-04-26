@@ -204,6 +204,17 @@
 - DR/백업 복구 리허설.
 - 산출물: 보안 점검표, 복구 훈련 결과.
 
+### Phase 7: 와이어프레임 반영 및 화면 전달 (2주)
+- `wireframe.md` 기준 IA(`Auth`, `Dashboard`, `Detection Run`, `Task Result`, `Causal Report`, `Action Recommendation`, `Operations`)를 React 라우트로 확정.
+- 데스크톱/모바일 공통 레이아웃(Topbar/LeftNav/BottomNav) 구현.
+- 역할 기반 가드(`tenant_admin`, `ml_operator`, `viewer`)를 화면/버튼 레벨로 일관 적용.
+- 상태별 UI 규칙(loading/empty/error/success)과 표준 에러 블록(`code`, `message`, `details`) 공통 컴포넌트화.
+- API 연결 화면 우선 구현:
+  - `GET /tasks/{task_id}`
+  - `GET /tasks/{task_id}/causal-report`
+  - `GET /tasks/{task_id}/action-recommendation`
+- 산출물: `wireframe.md` 추적 가능한 화면 구현 체크리스트, 클릭 가능한 프로토타입, QA 시나리오.
+
 ## 7. 테스트 및 검증 시나리오
 
 ### 자동화 테스트
@@ -228,7 +239,7 @@
 - UI 성능: 대용량 테이블/차트 렌더링 시간과 상호작용 지연 측정.
 
 ## 8. 배포 및 롤아웃 전략
-- 총 10~14주 권장.
+- 총 12~16주 권장.
 - feature flag:
   - auth_enabled
   - tenant_enforcement
@@ -275,3 +286,7 @@
   - 조치추천 시뮬레이션 화면
   - 운영 대시보드 고도화(SLO/알림/감사)
   - Streamlit 종료 계획 수립 및 안내
+- P3
+  - `wireframe.md`의 7개 핵심 화면을 React 라우트/페이지로 1차 구현
+  - 공통 레이아웃/상태 컴포넌트(loading/empty/error/success) 패키징
+  - 모바일 브레이크포인트 기준 반응형 검수(핵심 플로우 3개)
