@@ -130,3 +130,39 @@ def fetch_quota_status(*, token: str | None, request_id: str | None = None) -> d
     resp.raise_for_status()
     body = resp.json()
     return body.get("data", body)
+
+
+def fetch_causal_report(
+    *,
+    task_id: str,
+    token: str | None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    trace_id = request_id or str(uuid.uuid4())
+    headers = _build_headers(token, trace_id)
+    resp = requests.get(
+        f"{API_BASE_URL}/tasks/{task_id}/causal-report",
+        headers=headers,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    return body.get("data", body)
+
+
+def fetch_action_recommendation(
+    *,
+    task_id: str,
+    token: str | None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    trace_id = request_id or str(uuid.uuid4())
+    headers = _build_headers(token, trace_id)
+    resp = requests.get(
+        f"{API_BASE_URL}/tasks/{task_id}/action-recommendation",
+        headers=headers,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    return body.get("data", body)

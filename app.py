@@ -18,10 +18,13 @@ from bokeh.layouts import column, row
 from prefect import flow, task
 from auth import build_request_context, decode_token, get_auth_settings
 from streamlit_api import (
+    fetch_action_recommendation,
     fetch_audit_events,
+    fetch_causal_report,
     fetch_dashboard_summary,
     fetch_quota_status,
     submit_task,
+    fetch_task_result,
     wait_for_task_result,
 )
 
@@ -582,6 +585,49 @@ def render_operations_panel():
         st.error(f"Failed to load audit events: {exc}")
 
 
+def render_task_result_panel():
+    st.header("Task Result", divider=True)
+    task_id = st.text_input("Task ID", value="", key="task_result_task_id")
+    if not task_id.strip():
+        st.info("Enter a task_id to load result.")
+        return
+
+    token = st.session_state.get("auth_token")
+    req_id = str(uuid.uuid4())
+
+    col_load, col_causal, col_action = st.columns(3)
+    load_result = col_load.button("Load Result")
+    load_causal = col_causal.button("Load Causal Report")
+    load_action = col_action.button("Load Recommendation")
+
+    if load_result:
+        try:
+            result_data = fetch_task_result(task_id=task_id.strip(), token=token, request_id=req_id)
+            status = result_data.get("status")
+            st.subheader("Task Status")
+            st.write(status)
+            st.subheader("Task Payload")
+            st.json(result_data)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Failed to load task result: {exc}")
+
+    if load_causal:
+        try:
+            causal_data = fetch_causal_report(task_id=task_id.strip(), token=token, request_id=req_id)
+            st.subheader("Causal Report")
+            st.json(causal_data.get("causal_report", causal_data))
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Failed to load causal report: {exc}")
+
+    if load_action:
+        try:
+            action_data = fetch_action_recommendation(task_id=task_id.strip(), token=token, request_id=req_id)
+            st.subheader("Action Recommendation")
+            st.json(action_data.get("action_recommendation", action_data))
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Failed to load action recommendation: {exc}")
+
+
 @task(log_prints=True)
 def submit_to_celery(df, algorithm, params, workflow_type, tenant_context):
     # API-first mode: Streamlit submits to FastAPI, and FastAPI enqueues Celery.
@@ -687,7 +733,7 @@ if __name__ == "__main__":
 
                 # http://localhost:4200/dashboard ????°ë
                 st.header("? Workflow Management")
-                stage = st.sidebar.radio("Choose Step", ['Home', 'Saved Workflows', 'Monitor Workflows'])
+                stage = st.sidebar.radio("Choose Step", ['Home', 'Saved Workflows', 'Task Result', 'Monitor Workflows'])
 
                 st.header("ë§ë  ?¬ë")
                 stage = st.sidebar.button('Our team')
@@ -695,6 +741,10 @@ if __name__ == "__main__":
 
             if stage == "Saved Workflows":
                 render_dashboard_panel()
+                st.stop()
+
+            if stage == "Task Result":
+                render_task_result_panel()
                 st.stop()
 
             if stage == "Monitor Workflows":
