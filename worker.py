@@ -11,13 +11,20 @@ from sklearn.cluster import DBSCAN, KMeans
 from sklearn.mixture import GaussianMixture
 from sklearn.metrics import pairwise_distances
 from sklearn.preprocessing import MinMaxScaler
-from repositories import AuditRepository, TaskResultRepository
+from repositories import (
+    ActionRecommendationRepository,
+    AuditRepository,
+    CausalReportRepository,
+    TaskResultRepository,
+)
 
 app = Celery('worker')
 app.config_from_object(celeryconfig)
 
 task_result_repo = TaskResultRepository()
 audit_repo = AuditRepository()
+causal_report_repo = CausalReportRepository()
+action_recommendation_repo = ActionRecommendationRepository()
 
 REQUIRED_TENANT_CONTEXT_FIELDS = {"tenant_id", "actor_id", "roles", "request_id", "plan_tier"}
 PLAN_TIER_CONCURRENCY_LIMITS = {
@@ -162,6 +169,38 @@ def _upsert_success_result(task_id, tenant_context, algorithm, params, result, i
         result="success",
         request_id=tenant_context["request_id"],
         details={"algorithm": algorithm},
+    )
+    _create_analysis_drafts(task_id, tenant_context, result)
+
+
+def _create_analysis_drafts(task_id, tenant_context, result):
+    outlier_count = len(result.get("outlier_indices", []))
+    effect_size = round(min(1.0, outlier_count / max(1, len(result.get("index", [])))), 4)
+    analysis_id = f"{task_id}:draft"
+    recommendation_id = f"{task_id}:action:draft"
+
+    causal_report_repo.upsert_report(
+        tenant_id=tenant_context["tenant_id"],
+        analysis_id=analysis_id,
+        task_id=task_id,
+        treatment="algorithm_threshold_tuning",
+        outcome="outlier_rate",
+        confounders=["seasonality", "data_drift"],
+        effect_size=effect_size,
+        confidence_interval={"low": max(0.0, effect_size - 0.05), "high": min(1.0, effect_size + 0.05)},
+        refutation_result="pending",
+    )
+
+    risk_level = "high" if effect_size >= 0.3 else "medium" if effect_size >= 0.1 else "low"
+    priority = 1 if risk_level == "high" else 2 if risk_level == "medium" else 3
+    action_recommendation_repo.upsert_recommendation(
+        tenant_id=tenant_context["tenant_id"],
+        recommendation_id=recommendation_id,
+        task_id=task_id,
+        scenario="reduce_false_positives",
+        expected_uplift=round(max(0.0, 0.5 - effect_size), 4),
+        risk_level=risk_level,
+        priority=priority,
     )
 
 @app.task(bind=True, autoretry_for=(Exception,), dont_autoretry_for=(ValueError,), retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": 3})

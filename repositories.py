@@ -181,3 +181,91 @@ class AuditRepository:
                 "timestamp": _utc_now(),
             }
         )
+
+
+class CausalReportRepository:
+    def __init__(self) -> None:
+        db = get_mongo_client().celery_results
+        self._collection = db.causal_reports
+        self._collection.create_index(
+            [("tenant_id", ASCENDING), ("analysis_id", ASCENDING)],
+            unique=True,
+            name="tenant_analysis_unique",
+        )
+
+    def upsert_report(
+        self,
+        *,
+        tenant_id: str,
+        analysis_id: str,
+        task_id: str,
+        treatment: str,
+        outcome: str,
+        confounders: list[str],
+        effect_size: float,
+        confidence_interval: dict[str, float],
+        refutation_result: str,
+    ) -> None:
+        now = _utc_now()
+        self._collection.update_one(
+            {"tenant_id": tenant_id, "analysis_id": analysis_id},
+            {
+                "$set": {
+                    "tenant_id": tenant_id,
+                    "analysis_id": analysis_id,
+                    "task_id": task_id,
+                    "dag_version": "draft-v1",
+                    "treatment": treatment,
+                    "outcome": outcome,
+                    "confounders": confounders,
+                    "effect_size": effect_size,
+                    "confidence_interval": confidence_interval,
+                    "refutation_result": refutation_result,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {"created_at": now},
+            },
+            upsert=True,
+        )
+
+
+class ActionRecommendationRepository:
+    def __init__(self) -> None:
+        db = get_mongo_client().celery_results
+        self._collection = db.action_recommendations
+        self._collection.create_index(
+            [("tenant_id", ASCENDING), ("recommendation_id", ASCENDING)],
+            unique=True,
+            name="tenant_recommendation_unique",
+        )
+
+    def upsert_recommendation(
+        self,
+        *,
+        tenant_id: str,
+        recommendation_id: str,
+        task_id: str,
+        scenario: str,
+        expected_uplift: float,
+        risk_level: str,
+        priority: int,
+    ) -> None:
+        now = _utc_now()
+        self._collection.update_one(
+            {"tenant_id": tenant_id, "recommendation_id": recommendation_id},
+            {
+                "$set": {
+                    "tenant_id": tenant_id,
+                    "recommendation_id": recommendation_id,
+                    "task_id": task_id,
+                    "scenario": scenario,
+                    "expected_uplift": expected_uplift,
+                    "risk_level": risk_level,
+                    "priority": priority,
+                    "generated_at": now,
+                    "updated_at": now,
+                },
+                "$setOnInsert": {"created_at": now},
+            },
+            upsert=True,
+        )
