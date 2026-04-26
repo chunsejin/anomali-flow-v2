@@ -1,6 +1,4 @@
 from celery import Celery
-from pymongo import MongoClient
-import streamlit as st
 import celeryconfig
 import pandas as pd
 import numpy as np
@@ -11,14 +9,13 @@ from sklearn.cluster import DBSCAN, KMeans
 from sklearn.mixture import GaussianMixture
 from sklearn.metrics import pairwise_distances
 from sklearn.preprocessing import MinMaxScaler
-from collections import defaultdict
+from repositories import AuditRepository, TaskResultRepository
 
 app = Celery('worker')
 app.config_from_object(celeryconfig)
 
-client = MongoClient('mongo', 27017)
-db = client.celery_results
-collection = db.results
+task_result_repo = TaskResultRepository()
+audit_repo = AuditRepository()
 
 REQUIRED_TENANT_CONTEXT_FIELDS = {"tenant_id", "actor_id", "roles", "request_id", "plan_tier"}
 
@@ -40,12 +37,34 @@ def validate_tenant_context(tenant_context):
 
     return tenant_context
 
-# Celery 앱 설정
-app = Celery('tasks', broker='redis://redis:6379/0')
+# Celery ???�정
+def _upsert_success_result(task_id, tenant_context, algorithm, params, result):
+    task_result_repo.upsert_task_result(
+        tenant_id=tenant_context["tenant_id"],
+        task_id=task_id,
+        status="SUCCESS",
+        algorithm=algorithm,
+        params=params,
+        created_by=tenant_context["actor_id"],
+        request_id=tenant_context["request_id"],
+        plan_tier=tenant_context["plan_tier"],
+        result_payload=result,
+    )
+    audit_repo.log_event(
+        tenant_id=tenant_context["tenant_id"],
+        actor_id=tenant_context["actor_id"],
+        action="task.complete",
+        resource_type="task",
+        resource_id=task_id,
+        result="success",
+        request_id=tenant_context["request_id"],
+        details={"algorithm": algorithm},
+    )
 
-@app.task
-def run_timeseries_workflow(df, algorithm, params, tenant_context):
+@app.task(bind=True)
+def run_timeseries_workflow(self, df, algorithm, params, tenant_context):
     tenant_context = validate_tenant_context(tenant_context)
+    task_id = self.request.id
     print(
         f"tenant_id={tenant_context['tenant_id']} "
         f"request_id={tenant_context['request_id']} "
@@ -62,7 +81,7 @@ def run_timeseries_workflow(df, algorithm, params, tenant_context):
     result = {}
     root_cause_scores = {}
 
-    # Prefect 타임시리즈 워크플로우 호출
+    # Prefect ?�?�시리즈 ?�크?�로???�출
     if algorithm == 'IsolationForest':
         model = IsolationForest(max_samples=params["max_samples"], n_jobs=params["n_jobs"], contamination=params["contamination"])
         model.fit(X)
@@ -80,28 +99,28 @@ def run_timeseries_workflow(df, algorithm, params, tenant_context):
         outlier_probabilities = (1 - probs.max(axis=1)[probs.max(axis=1) < prob_threshold]).tolist()
     
     
-    # 모든 인덱스에 대해 root cause score 계산
+    # 모든 ?�덱?�에 ?�??root cause score 계산
     for timestamp in X.index:
-        # 각 timestamp에서 feature-wise 편차 계산
+        # �?timestamp?�서 feature-wise ?�차 계산
         score = np.abs(X.loc[timestamp].values - X.mean(axis=0).values)
     
-        # score와 X.columns의 길이를 맞춤
+        # score?� X.columns??길이�?맞춤
         if len(score) != len(X.columns):
-            # X.columns 크기에 맞게 score를 조정 (resize 사용)
+            # X.columns ?�기??맞게 score�?조정 (resize ?�용)
             score = np.resize(score, len(X.columns))
-        # 정규화 과정
-        score = (score - np.min(score)) / (np.max(score) - np.min(score) + 1e-9)  # 정규화
+        # ?�규??과정
+        score = (score - np.min(score)) / (np.max(score) - np.min(score) + 1e-9)  # ?�규??
     
-        # 다시 한 번 확인해서 score가 1차원인지 확인
+        # ?�시 ??�??�인?�서 score가 1차원?��? ?�인
         if score.ndim > 1:
-            score = score.flatten()  # 1차원으로 평탄화
+            score = score.flatten()  # 1차원?�로 ?�탄??
     
-        # score를 시리즈로 변환하여 root_cause_scores에 저장
+        # score�??�리즈로 변?�하??root_cause_scores???�??
         score_series = pd.Series(score, index=X.columns)
-        root_cause_scores[str(timestamp)] = score_series.to_dict()  # 저장
+        root_cause_scores[str(timestamp)] = score_series.to_dict()  # ?�??
 
 
-    # MongoDB에 저장할 직렬화 가능한 결과만 저장
+    # MongoDB???�?�할 직렬??가?�한 결과�??�??
     result['outlier_indices'] = outlier_indices
     result['outlier_probabilities'] = outlier_probabilities
     result['root_cause_scores'] = root_cause_scores
@@ -109,36 +128,28 @@ def run_timeseries_workflow(df, algorithm, params, tenant_context):
     result['tenant_id'] = tenant_context['tenant_id']
     result['request_id'] = tenant_context['request_id']
     
-    insert_result = {
-        "status": "success",
-        "algorithm": algorithm,
-        "params": params,
-        "tenant_id": tenant_context['tenant_id'],
-        "actor_id": tenant_context['actor_id'],
-        "request_id": tenant_context['request_id'],
-        "plan_tier": tenant_context['plan_tier'],
-    }
     
-    # MongoDB에 결과 저장
-    result_id = collection.insert_one(insert_result).inserted_id
-    result['_id'] = str(result_id)
+    # MongoDB??결과 ?�??
+    _upsert_success_result(task_id, tenant_context, algorithm, params, result)
+    result["_id"] = task_id
 
     return result
 
-@app.task
-def run_categorical_workflow(df, algorithm, params, tenant_context):
+@app.task(bind=True)
+def run_categorical_workflow(self, df, algorithm, params, tenant_context):
     tenant_context = validate_tenant_context(tenant_context)
+    task_id = self.request.id
     print(
         f"tenant_id={tenant_context['tenant_id']} "
         f"request_id={tenant_context['request_id']} "
         f"workflow=categorical"
     )
     df = pd.DataFrame(df)
-    # NaN 값을 중앙값으로 대체 (또는 dropna로 제거)
+    # NaN 값을 중앙값으�??��?(?�는 dropna�??�거)
     imputer = SimpleImputer(strategy='median')
     df = pd.DataFrame(imputer.fit_transform(df), columns=df.columns)
     
-    # 0번째 열을 문자열 그대로 인덱스로 설정
+    # 0번째 ?�을 문자??그�?�??�덱?�로 ?�정
     df.set_index(df.columns[0], inplace=True)
     index = df.index.tolist()
     index = [str(i) for i in index] 
@@ -148,7 +159,7 @@ def run_categorical_workflow(df, algorithm, params, tenant_context):
     result = {}
     root_cause_scores = {}
     
-    # Prefect 카테고리 워크플로우 호출
+    # Prefect 카테고리 ?�크?�로???�출
     if algorithm == 'LOF':
         model = LocalOutlierFactor(n_neighbors=params["n_neighbors"], n_jobs=params["n_jobs"], contamination=params["contamination"])
         y_pred = model.fit_predict(X)
@@ -180,28 +191,28 @@ def run_categorical_workflow(df, algorithm, params, tenant_context):
             outlier_probabilities = scaler.fit_transform(outlier_scores.reshape(-1, 1)).flatten().tolist()
     
 
-    # 모든 인덱스에 대해 root cause score 계산
+    # 모든 ?�덱?�에 ?�??root cause score 계산
     for timestamp in X.index:
-        # 각 timestamp에서 feature-wise 편차 계산
+        # �?timestamp?�서 feature-wise ?�차 계산
         score = np.abs(X.loc[timestamp].values - X.mean(axis=0).values)
     
-        # score와 X.columns의 길이를 맞춤
+        # score?� X.columns??길이�?맞춤
         if len(score) != len(X.columns):
-            # X.columns 크기에 맞게 score를 조정 (resize 사용)
+            # X.columns ?�기??맞게 score�?조정 (resize ?�용)
             score = np.resize(score, len(X.columns))
-        # 정규화 과정
-        score = (score - np.min(score)) / (np.max(score) - np.min(score) + 1e-9)  # 정규화
+        # ?�규??과정
+        score = (score - np.min(score)) / (np.max(score) - np.min(score) + 1e-9)  # ?�규??
     
-        # 다시 한 번 확인해서 score가 1차원인지 확인
+        # ?�시 ??�??�인?�서 score가 1차원?��? ?�인
         if score.ndim > 1:
-            score = score.flatten()  # 1차원으로 평탄화
+            score = score.flatten()  # 1차원?�로 ?�탄??
     
-        # score를 시리즈로 변환하여 root_cause_scores에 저장
+        # score�??�리즈로 변?�하??root_cause_scores???�??
         score_series = pd.Series(score, index=X.columns)
-        root_cause_scores[str(timestamp)] = score_series.to_dict()  # 저장
+        root_cause_scores[str(timestamp)] = score_series.to_dict()  # ?�??
 
         
-    # MongoDB에 저장할 직렬화 가능한 결과만 저장
+    # MongoDB???�?�할 직렬??가?�한 결과�??�??
     result['outlier_indices'] = outlier_indices
     result['outlier_probabilities'] = outlier_probabilities
     result['root_cause_scores'] = root_cause_scores
@@ -210,36 +221,28 @@ def run_categorical_workflow(df, algorithm, params, tenant_context):
     result['request_id'] = tenant_context['request_id']
 
     
-    insert_result = {
-        "status": "success",
-        "algorithm": algorithm,
-        "params": params,
-        "tenant_id": tenant_context['tenant_id'],
-        "actor_id": tenant_context['actor_id'],
-        "request_id": tenant_context['request_id'],
-        "plan_tier": tenant_context['plan_tier'],
-    }
     
-    # MongoDB에 결과 저장
-    result_id = collection.insert_one(insert_result).inserted_id
-    result['_id'] = str(result_id)
+    # MongoDB??결과 ?�??
+    _upsert_success_result(task_id, tenant_context, algorithm, params, result)
+    result["_id"] = task_id
 
     return result
 
-@app.task
-def run_numerical_workflow(df, algorithm, params, tenant_context):
+@app.task(bind=True)
+def run_numerical_workflow(self, df, algorithm, params, tenant_context):
     tenant_context = validate_tenant_context(tenant_context)
+    task_id = self.request.id
     print(
         f"tenant_id={tenant_context['tenant_id']} "
         f"request_id={tenant_context['request_id']} "
         f"workflow=numerical"
     )
     df = pd.DataFrame(df)
-    # NaN 값을 중앙값으로 대체 (또는 dropna로 제거)
+    # NaN 값을 중앙값으�??��?(?�는 dropna�??�거)
     imputer = SimpleImputer(strategy='median')
     df = pd.DataFrame(imputer.fit_transform(df), columns=df.columns)
 
-    # 0번째 열을 문자열 그대로 인덱스로 설정
+    # 0번째 ?�을 문자??그�?�??�덱?�로 ?�정
     df.set_index(df.columns[0], inplace=True)
 
     index = df.index.tolist()
@@ -250,7 +253,7 @@ def run_numerical_workflow(df, algorithm, params, tenant_context):
     result = {}
     root_cause_scores = {}
     
-    # Prefect 카테고리 워크플로우 호출
+    # Prefect 카테고리 ?�크?�로???�출
     if algorithm == 'IsolationForest':
         model = IsolationForest(max_samples=params["max_samples"], n_jobs=params["n_jobs"], contamination=params["contamination"])
         model.fit(X)
@@ -309,25 +312,25 @@ def run_numerical_workflow(df, algorithm, params, tenant_context):
 
         
     for timestamp in X.index:
-        # 각 timestamp에서 feature-wise 편차 계산
+        # �?timestamp?�서 feature-wise ?�차 계산
         score = np.abs(X.loc[timestamp].values - X.mean(axis=0).values)
     
-        # score와 X.columns의 길이를 맞춤
+        # score?� X.columns??길이�?맞춤
         if len(score) != len(X.columns):
-            # X.columns 크기에 맞게 score를 조정 (resize 사용)
+            # X.columns ?�기??맞게 score�?조정 (resize ?�용)
             score = np.resize(score, len(X.columns))
-        # 정규화 과정
-        score = (score - np.min(score)) / (np.max(score) - np.min(score) + 1e-9)  # 정규화
+        # ?�규??과정
+        score = (score - np.min(score)) / (np.max(score) - np.min(score) + 1e-9)  # ?�규??
     
-        # 다시 한 번 확인해서 score가 1차원인지 확인
+        # ?�시 ??�??�인?�서 score가 1차원?��? ?�인
         if score.ndim > 1:
-            score = score.flatten()  # 1차원으로 평탄화
+            score = score.flatten()  # 1차원?�로 ?�탄??
     
-        # score를 시리즈로 변환하여 root_cause_scores에 저장
+        # score�??�리즈로 변?�하??root_cause_scores???�??
         score_series = pd.Series(score, index=X.columns)
-        root_cause_scores[str(timestamp)] = score_series.to_dict()  # 저장
+        root_cause_scores[str(timestamp)] = score_series.to_dict()  # ?�??
         
-    # MongoDB에 저장할 직렬화 가능한 결과만 저장
+    # MongoDB???�?�할 직렬??가?�한 결과�??�??
     result['outlier_indices'] = outlier_indices
     result['outlier_probabilities'] = outlier_probabilities
     result['root_cause_scores'] = root_cause_scores
@@ -336,18 +339,9 @@ def run_numerical_workflow(df, algorithm, params, tenant_context):
     result['request_id'] = tenant_context['request_id']
 
     
-    insert_result = {
-        "status": "success",
-        "algorithm": algorithm,
-        "params": params,
-        "tenant_id": tenant_context['tenant_id'],
-        "actor_id": tenant_context['actor_id'],
-        "request_id": tenant_context['request_id'],
-        "plan_tier": tenant_context['plan_tier'],
-    }
     
-    # MongoDB에 결과 저장
-    result_id = collection.insert_one(insert_result).inserted_id
-    result['_id'] = str(result_id)
+    # MongoDB??결과 ?�??
+    _upsert_success_result(task_id, tenant_context, algorithm, params, result)
+    result["_id"] = task_id
 
     return result
