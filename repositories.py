@@ -228,6 +228,13 @@ class CausalReportRepository:
             upsert=True,
         )
 
+    def get_report_by_task_for_tenant(self, *, tenant_id: str, task_id: str) -> Optional[dict[str, Any]]:
+        return self._collection.find_one(
+            {"tenant_id": tenant_id, "task_id": task_id},
+            {"_id": 0},
+            sort=[("updated_at", DESCENDING)],
+        )
+
 
 class ActionRecommendationRepository:
     def __init__(self) -> None:
@@ -268,4 +275,13 @@ class ActionRecommendationRepository:
                 "$setOnInsert": {"created_at": now},
             },
             upsert=True,
+        )
+
+    def get_recommendation_by_task_for_tenant(
+        self, *, tenant_id: str, task_id: str
+    ) -> Optional[dict[str, Any]]:
+        return self._collection.find_one(
+            {"tenant_id": tenant_id, "task_id": task_id},
+            {"_id": 0},
+            sort=[("updated_at", DESCENDING)],
         )
