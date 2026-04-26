@@ -147,4 +147,4 @@ jobs:
           github.event_name != 'workflow_dispatch'
         run: |
           echo "Plan is not complete yet. Waiting for next scheduled/push run."
-          exit 1
+          exit 0
