@@ -4,6 +4,7 @@ import requests
 import pandas as pd
 import time
 import json
+import uuid
 import tensorly as tl
 from sklearn.preprocessing import StandardScaler
 from tensorly.decomposition import parafac
@@ -455,14 +456,24 @@ def numerical_preprocess(df, tensor_rank):
 
 
 # Prefect 태스크: Celery에 작업을 넘기는 함수
+def get_streamlit_tenant_context():
+    return {
+        "tenant_id": st.session_state.get("tenant_id", "default"),
+        "actor_id": st.session_state.get("actor_id", "streamlit-user"),
+        "roles": st.session_state.get("roles", ["tenant_admin", "ml_operator", "viewer"]),
+        "request_id": str(uuid.uuid4()),
+        "plan_tier": st.session_state.get("plan_tier", "standard"),
+    }
+
+
 @task(log_prints=True)
-def submit_to_celery(df, algorithm, params, workflow_type):
+def submit_to_celery(df, algorithm, params, workflow_type, tenant_context):
     if workflow_type == 'timeseries':
-        task = run_timeseries_workflow.apply_async(args=[df, algorithm, params])
+        task = run_timeseries_workflow.apply_async(args=[df, algorithm, params, tenant_context])
     elif workflow_type == 'categorical':
-        task = run_categorical_workflow.apply_async(args=[df, algorithm, params])
+        task = run_categorical_workflow.apply_async(args=[df, algorithm, params, tenant_context])
     elif workflow_type == 'numerical':
-        task = run_numerical_workflow.apply_async(args=[df, algorithm, params])
+        task = run_numerical_workflow.apply_async(args=[df, algorithm, params, tenant_context])
     
     return task.id  # 작업 ID 반환
 
@@ -477,27 +488,27 @@ def get_celery_result(task_id):
 
 ######## Time Series  데이터 Prefect 워크플로우 ########
 @flow(log_prints=True)
-def timeseries_workflow(df, algorithm, param):
+def timeseries_workflow(df, algorithm, params, tenant_context):
     # Celery worker에 작업을 넘김
-    task_id = submit_to_celery(df, algorithm, params, 'timeseries')
+    task_id = submit_to_celery(df, algorithm, params, 'timeseries', tenant_context)
     # Celery 작업의 결과를 가져옴
     result = get_celery_result(task_id)
     return result
 
 ######## Categorical  데이터 Prefect 워크플로우 ########
 @flow(log_prints=True)
-def categorical_workflow(df, algorithm, params):
+def categorical_workflow(df, algorithm, params, tenant_context):
     # Celery worker에 작업을 넘김
-    task_id = submit_to_celery(df, algorithm, params, 'categorical')
+    task_id = submit_to_celery(df, algorithm, params, 'categorical', tenant_context)
     # Celery 작업의 결과를 가져옴
     result = get_celery_result(task_id)
     return result
 
 ######## Numerical  데이터 Prefect 워크플로우 ########
 @flow(log_prints=True)
-def numerical_workflow(df, algorithm, params):
+def numerical_workflow(df, algorithm, params, tenant_context):
     # Celery worker에 작업을 넘김
-    task_id = submit_to_celery(df, algorithm, params, 'numerical')
+    task_id = submit_to_celery(df, algorithm, params, 'numerical', tenant_context)
     # Celery 작업의 결과를 가져옴
     result = get_celery_result(task_id)
     return result
@@ -637,7 +648,12 @@ if __name__ == "__main__":
                                     st.title("AnomaliFlow Visualization")
                                     # Celery worker에 비동기 작업 요청
                                     df_dict = df.to_dict(orient='records')
-                                    result = run_timeseries_workflow(df_dict, time_series_model, params)
+                                    result = run_timeseries_workflow(
+                                        df_dict,
+                                        time_series_model,
+                                        params,
+                                        get_streamlit_tenant_context(),
+                                    )
                                     
                                     # Visualization step
                                     if result:
@@ -684,7 +700,12 @@ if __name__ == "__main__":
                                     st.title("AnomaliFlow Visualization")
                                     # Celery worker에 비동기 작업 요청
                                     df_dict = df.to_dict(orient='records')
-                                    result = run_categorical_workflow(df_dict, algorithm, params)
+                                    result = run_categorical_workflow(
+                                        df_dict,
+                                        algorithm,
+                                        params,
+                                        get_streamlit_tenant_context(),
+                                    )
                                     
                                     # Visualization step
                                     if result:
@@ -748,7 +769,12 @@ if __name__ == "__main__":
                                     st.title("AnomaliFlow Visualization")
                                     # Celery worker에 비동기 작업 요청
                                     df_dict = df.to_dict(orient='records')
-                                    result = run_numerical_workflow(df_dict, numerical_model, params)
+                                    result = run_numerical_workflow(
+                                        df_dict,
+                                        numerical_model,
+                                        params,
+                                        get_streamlit_tenant_context(),
+                                    )
                                     
                                     # Visualization step
                                     if result:

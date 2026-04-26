@@ -30,11 +30,22 @@ def run_task(
     context: RequestContext = Depends(require_request_context),
 ):
     require_roles(context, {"tenant_admin", "ml_operator"})
+    tenant_context = context.as_tenant_context()
 
     if request.algorithm in ["DBSCAN", "KMeans"]:
-        task = run_timeseries_workflow.delay(request.df, request.algorithm, request.params)
+        task = run_timeseries_workflow.delay(
+            request.df,
+            request.algorithm,
+            request.params,
+            tenant_context,
+        )
     else:
-        task = run_categorical_workflow.delay(request.df, request.algorithm, request.params)
+        task = run_categorical_workflow.delay(
+            request.df,
+            request.algorithm,
+            request.params,
+            tenant_context,
+        )
 
     background_tasks.add_task(check_task_status, task.id)
     return {

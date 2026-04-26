@@ -20,11 +20,37 @@ client = MongoClient('mongo', 27017)
 db = client.celery_results
 collection = db.results
 
+REQUIRED_TENANT_CONTEXT_FIELDS = {"tenant_id", "actor_id", "roles", "request_id", "plan_tier"}
+
+
+def validate_tenant_context(tenant_context):
+    if not isinstance(tenant_context, dict):
+        raise ValueError("tenant_context must be a dict")
+
+    missing = REQUIRED_TENANT_CONTEXT_FIELDS - set(tenant_context)
+    if missing:
+        raise ValueError(f"tenant_context missing required fields: {sorted(missing)}")
+
+    if not tenant_context["tenant_id"] or not tenant_context["actor_id"]:
+        raise ValueError("tenant_context requires tenant_id and actor_id")
+
+    roles = tenant_context["roles"]
+    if not isinstance(roles, list) or not roles:
+        raise ValueError("tenant_context roles must be a non-empty list")
+
+    return tenant_context
+
 # Celery 앱 설정
 app = Celery('tasks', broker='redis://redis:6379/0')
 
 @app.task
-def run_timeseries_workflow(df, algorithm, params):
+def run_timeseries_workflow(df, algorithm, params, tenant_context):
+    tenant_context = validate_tenant_context(tenant_context)
+    print(
+        f"tenant_id={tenant_context['tenant_id']} "
+        f"request_id={tenant_context['request_id']} "
+        f"workflow=timeseries"
+    )
     df = pd.DataFrame(df)
 
     df.set_index(df.columns[0], inplace=True)
@@ -80,11 +106,17 @@ def run_timeseries_workflow(df, algorithm, params):
     result['outlier_probabilities'] = outlier_probabilities
     result['root_cause_scores'] = root_cause_scores
     result['index'] = index
+    result['tenant_id'] = tenant_context['tenant_id']
+    result['request_id'] = tenant_context['request_id']
     
     insert_result = {
         "status": "success",
         "algorithm": algorithm,
-        "params": params
+        "params": params,
+        "tenant_id": tenant_context['tenant_id'],
+        "actor_id": tenant_context['actor_id'],
+        "request_id": tenant_context['request_id'],
+        "plan_tier": tenant_context['plan_tier'],
     }
     
     # MongoDB에 결과 저장
@@ -94,7 +126,13 @@ def run_timeseries_workflow(df, algorithm, params):
     return result
 
 @app.task
-def run_categorical_workflow(df, algorithm, params):
+def run_categorical_workflow(df, algorithm, params, tenant_context):
+    tenant_context = validate_tenant_context(tenant_context)
+    print(
+        f"tenant_id={tenant_context['tenant_id']} "
+        f"request_id={tenant_context['request_id']} "
+        f"workflow=categorical"
+    )
     df = pd.DataFrame(df)
     # NaN 값을 중앙값으로 대체 (또는 dropna로 제거)
     imputer = SimpleImputer(strategy='median')
@@ -168,12 +206,18 @@ def run_categorical_workflow(df, algorithm, params):
     result['outlier_probabilities'] = outlier_probabilities
     result['root_cause_scores'] = root_cause_scores
     result['index'] = index
+    result['tenant_id'] = tenant_context['tenant_id']
+    result['request_id'] = tenant_context['request_id']
 
     
     insert_result = {
         "status": "success",
         "algorithm": algorithm,
-        "params": params
+        "params": params,
+        "tenant_id": tenant_context['tenant_id'],
+        "actor_id": tenant_context['actor_id'],
+        "request_id": tenant_context['request_id'],
+        "plan_tier": tenant_context['plan_tier'],
     }
     
     # MongoDB에 결과 저장
@@ -183,7 +227,13 @@ def run_categorical_workflow(df, algorithm, params):
     return result
 
 @app.task
-def run_numerical_workflow(df, algorithm, params):
+def run_numerical_workflow(df, algorithm, params, tenant_context):
+    tenant_context = validate_tenant_context(tenant_context)
+    print(
+        f"tenant_id={tenant_context['tenant_id']} "
+        f"request_id={tenant_context['request_id']} "
+        f"workflow=numerical"
+    )
     df = pd.DataFrame(df)
     # NaN 값을 중앙값으로 대체 (또는 dropna로 제거)
     imputer = SimpleImputer(strategy='median')
@@ -282,12 +332,18 @@ def run_numerical_workflow(df, algorithm, params):
     result['outlier_probabilities'] = outlier_probabilities
     result['root_cause_scores'] = root_cause_scores
     result['index'] = index
+    result['tenant_id'] = tenant_context['tenant_id']
+    result['request_id'] = tenant_context['request_id']
 
     
     insert_result = {
         "status": "success",
         "algorithm": algorithm,
-        "params": params
+        "params": params,
+        "tenant_id": tenant_context['tenant_id'],
+        "actor_id": tenant_context['actor_id'],
+        "request_id": tenant_context['request_id'],
+        "plan_tier": tenant_context['plan_tier'],
     }
     
     # MongoDB에 결과 저장
