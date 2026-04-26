@@ -1,3 +1,5 @@
+import json
+import logging
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
@@ -16,6 +18,12 @@ app = FastAPI()
 task_result_repo = TaskResultRepository()
 audit_repo = AuditRepository()
 POLICY_VERSION = "v1"
+logger = logging.getLogger("anomali.main")
+
+
+def slog(event: str, **fields: Any) -> None:
+    payload = {"event": event, **fields}
+    logger.info(json.dumps(payload, ensure_ascii=False))
 
 
 class TaskRequest(BaseModel):
@@ -96,6 +104,13 @@ def run_task(
 ):
     require_roles(context, {"tenant_admin", "ml_operator"})
     tenant_context = context.as_tenant_context()
+    slog(
+        "task_submit_requested",
+        tenant_id=context.tenant_id,
+        actor_id=context.actor_id,
+        request_id=context.request_id,
+        algorithm=request.algorithm,
+    )
 
     if request.algorithm in ["DBSCAN", "KMeans"]:
         task = run_timeseries_workflow.delay(
@@ -121,6 +136,14 @@ def run_task(
         request_id=context.request_id,
         plan_tier=context.plan_tier,
     )
+    slog(
+        "task_enqueued",
+        tenant_id=context.tenant_id,
+        actor_id=context.actor_id,
+        request_id=context.request_id,
+        task_id=task.id,
+        algorithm=request.algorithm,
+    )
     audit_repo.log_event(
         tenant_id=context.tenant_id,
         actor_id=context.actor_id,
@@ -144,6 +167,7 @@ def run_task(
 
 def check_task_status(task_id: str):
     result = AsyncResult(task_id)
+    slog("task_status_checked", task_id=task_id, state=result.state)
     if result.state == "SUCCESS":
         task_doc = task_result_repo.get_task_by_task_id(task_id=task_id)
         if task_doc:
@@ -185,6 +209,13 @@ def get_task_result(
     context: RequestContext = Depends(require_request_context),
 ):
     require_roles(context, {"tenant_admin", "ml_operator", "viewer"})
+    slog(
+        "task_result_requested",
+        tenant_id=context.tenant_id,
+        actor_id=context.actor_id,
+        request_id=context.request_id,
+        task_id=task_id,
+    )
     task_doc = task_result_repo.get_task_for_tenant(tenant_id=context.tenant_id, task_id=task_id)
     if not task_doc:
         raise HTTPException(status_code=404, detail="Task not found")

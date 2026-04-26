@@ -1,5 +1,7 @@
 from celery import Celery
 from celery.signals import task_failure, task_retry
+import json
+import logging
 import os
 import celeryconfig
 import pandas as pd
@@ -25,6 +27,7 @@ task_result_repo = TaskResultRepository()
 audit_repo = AuditRepository()
 causal_report_repo = CausalReportRepository()
 action_recommendation_repo = ActionRecommendationRepository()
+logger = logging.getLogger("anomali.worker")
 
 REQUIRED_TENANT_CONTEXT_FIELDS = {"tenant_id", "actor_id", "roles", "request_id", "plan_tier"}
 PLAN_TIER_CONCURRENCY_LIMITS = {
@@ -36,6 +39,11 @@ PLAN_TIER_CONCURRENCY_LIMITS = {
 
 class TenantQuotaExceededError(ValueError):
     pass
+
+
+def slog(event, **fields):
+    payload = {"event": event, **fields}
+    logger.info(json.dumps(payload, ensure_ascii=False))
 
 
 def validate_tenant_context(tenant_context):
@@ -76,6 +84,14 @@ def _prepare_task_execution(task_id, tenant_context, algorithm, params, workflow
     )
 
     if existing and existing.get("status") == "SUCCESS" and isinstance(existing.get("result_payload"), dict):
+        slog(
+            "task_idempotency_hit",
+            task_id=existing.get("task_id", task_id),
+            tenant_id=tenant_context["tenant_id"],
+            request_id=tenant_context["request_id"],
+            workflow=workflow_name,
+            algorithm=algorithm,
+        )
         audit_repo.log_event(
             tenant_id=tenant_context["tenant_id"],
             actor_id=tenant_context["actor_id"],
@@ -95,6 +111,14 @@ def _prepare_task_execution(task_id, tenant_context, algorithm, params, workflow
     active_count = task_result_repo.count_active_tasks_for_tenant(tenant_id=tenant_context["tenant_id"])
     quota = _workflow_quota_for_tier(tenant_context["plan_tier"])
     if active_count >= quota:
+        slog(
+            "task_quota_exceeded",
+            task_id=task_id,
+            tenant_id=tenant_context["tenant_id"],
+            request_id=tenant_context["request_id"],
+            active_count=active_count,
+            quota=quota,
+        )
         raise TenantQuotaExceededError(
             f"Tenant quota exceeded: active={active_count}, quota={quota}"
         )
@@ -114,6 +138,13 @@ def _prepare_task_execution(task_id, tenant_context, algorithm, params, workflow
 
 
 def _upsert_retry_result(task_id, tenant_context, error_message):
+    slog(
+        "task_retry",
+        task_id=task_id,
+        tenant_id=tenant_context["tenant_id"],
+        request_id=tenant_context["request_id"],
+        error=error_message,
+    )
     task_result_repo.upsert_task_result(
         tenant_id=tenant_context["tenant_id"],
         task_id=task_id,
@@ -126,6 +157,13 @@ def _upsert_retry_result(task_id, tenant_context, error_message):
 
 
 def _upsert_failure_result(task_id, tenant_context, error_message):
+    slog(
+        "task_failure",
+        task_id=task_id,
+        tenant_id=tenant_context["tenant_id"],
+        request_id=tenant_context["request_id"],
+        error=error_message,
+    )
     task_result_repo.upsert_task_result(
         tenant_id=tenant_context["tenant_id"],
         task_id=task_id,
@@ -148,6 +186,13 @@ def _upsert_failure_result(task_id, tenant_context, error_message):
 
 # Celery ???¤ì 
 def _upsert_success_result(task_id, tenant_context, algorithm, params, result, idempotency_key=None):
+    slog(
+        "task_success",
+        task_id=task_id,
+        tenant_id=tenant_context["tenant_id"],
+        request_id=tenant_context["request_id"],
+        algorithm=algorithm,
+    )
     task_result_repo.upsert_task_result(
         tenant_id=tenant_context["tenant_id"],
         task_id=task_id,
@@ -210,10 +255,13 @@ def run_timeseries_workflow(self, df, algorithm, params, tenant_context):
     idempotency_key, cached_result = _prepare_task_execution(task_id, tenant_context, algorithm, params, "timeseries")
     if cached_result is not None:
         return cached_result
-    print(
-        f"tenant_id={tenant_context['tenant_id']} "
-        f"request_id={tenant_context['request_id']} "
-        f"workflow=timeseries"
+    slog(
+        "task_started",
+        task_id=task_id,
+        tenant_id=tenant_context["tenant_id"],
+        request_id=tenant_context["request_id"],
+        workflow="timeseries",
+        algorithm=algorithm,
     )
     df = pd.DataFrame(df)
 
@@ -287,10 +335,13 @@ def run_categorical_workflow(self, df, algorithm, params, tenant_context):
     idempotency_key, cached_result = _prepare_task_execution(task_id, tenant_context, algorithm, params, "categorical")
     if cached_result is not None:
         return cached_result
-    print(
-        f"tenant_id={tenant_context['tenant_id']} "
-        f"request_id={tenant_context['request_id']} "
-        f"workflow=categorical"
+    slog(
+        "task_started",
+        task_id=task_id,
+        tenant_id=tenant_context["tenant_id"],
+        request_id=tenant_context["request_id"],
+        workflow="categorical",
+        algorithm=algorithm,
     )
     df = pd.DataFrame(df)
     # NaN ê°ì ì¤ìê°ì¼ë¡??ì²?(?ë dropnaë¡??ê±°)
@@ -383,10 +434,13 @@ def run_numerical_workflow(self, df, algorithm, params, tenant_context):
     idempotency_key, cached_result = _prepare_task_execution(task_id, tenant_context, algorithm, params, "numerical")
     if cached_result is not None:
         return cached_result
-    print(
-        f"tenant_id={tenant_context['tenant_id']} "
-        f"request_id={tenant_context['request_id']} "
-        f"workflow=numerical"
+    slog(
+        "task_started",
+        task_id=task_id,
+        tenant_id=tenant_context["tenant_id"],
+        request_id=tenant_context["request_id"],
+        workflow="numerical",
+        algorithm=algorithm,
     )
     df = pd.DataFrame(df)
     # NaN ê°ì ì¤ìê°ì¼ë¡??ì²?(?ë dropnaë¡??ê±°)
