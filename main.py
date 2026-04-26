@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
@@ -210,6 +211,15 @@ def check_task_status(task_id: str):
     return {"status": result.state}
 
 
+def _quota_for_tier(plan_tier: str) -> int:
+    limits = {
+        "standard": int(os.getenv("TENANT_QUOTA_STANDARD", "2")),
+        "pro": int(os.getenv("TENANT_QUOTA_PRO", "5")),
+        "enterprise": int(os.getenv("TENANT_QUOTA_ENTERPRISE", "10")),
+    }
+    return limits.get(plan_tier, limits["standard"])
+
+
 @app.get("/tasks/{task_id}", response_model=dict)
 def get_task_result(
     task_id: str,
@@ -250,6 +260,80 @@ def get_task_result(
     )
 
     return build_success_response(context, result_data)
+
+
+@app.get("/dashboard/summary", response_model=dict)
+def get_dashboard_summary(
+    context: RequestContext = Depends(require_request_context),
+):
+    require_roles(context, {"tenant_admin", "ml_operator", "viewer"})
+    metrics = task_result_repo.summarize_task_metrics_for_tenant(tenant_id=context.tenant_id)
+    recent_tasks = task_result_repo.list_recent_tasks_for_tenant(tenant_id=context.tenant_id, limit=20)
+    active_count = task_result_repo.count_active_tasks_for_tenant(tenant_id=context.tenant_id)
+    data = {
+        "metrics": metrics,
+        "active_tasks": active_count,
+        "recent_tasks": recent_tasks,
+    }
+    slog(
+        "dashboard_summary_requested",
+        tenant_id=context.tenant_id,
+        actor_id=context.actor_id,
+        request_id=context.request_id,
+    )
+    return build_success_response(context, data)
+
+
+@app.get("/operations/audit-events", response_model=dict)
+def get_audit_events(
+    limit: int = 100,
+    action: Optional[str] = None,
+    context: RequestContext = Depends(require_request_context),
+):
+    require_roles(context, {"tenant_admin", "ml_operator", "viewer"})
+    safe_limit = min(max(limit, 1), 500)
+    events = audit_repo.list_events_for_tenant(
+        tenant_id=context.tenant_id,
+        limit=safe_limit,
+        action=action,
+    )
+    slog(
+        "audit_events_requested",
+        tenant_id=context.tenant_id,
+        actor_id=context.actor_id,
+        request_id=context.request_id,
+        limit=safe_limit,
+        action=action,
+    )
+    return build_success_response(
+        context,
+        {
+            "count": len(events),
+            "events": events,
+        },
+    )
+
+
+@app.get("/operations/quota", response_model=dict)
+def get_quota_status(
+    context: RequestContext = Depends(require_request_context),
+):
+    require_roles(context, {"tenant_admin", "ml_operator", "viewer"})
+    max_concurrency = _quota_for_tier(context.plan_tier)
+    active_count = task_result_repo.count_active_tasks_for_tenant(tenant_id=context.tenant_id)
+    data = {
+        "plan_tier": context.plan_tier,
+        "active_count": active_count,
+        "max_concurrency": max_concurrency,
+        "remaining_capacity": max(0, max_concurrency - active_count),
+    }
+    slog(
+        "quota_status_requested",
+        tenant_id=context.tenant_id,
+        actor_id=context.actor_id,
+        request_id=context.request_id,
+    )
+    return build_success_response(context, data)
 
 
 @app.get("/tasks/{task_id}/causal-report", response_model=dict)

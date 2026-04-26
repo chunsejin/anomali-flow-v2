@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from functools import lru_cache
 from typing import Any, Optional
 
@@ -142,6 +142,44 @@ class TaskResultRepository:
             {"tenant_id": tenant_id, "status": {"$in": ["PENDING", "STARTED", "RETRY"]}}
         )
 
+    def list_recent_tasks_for_tenant(self, *, tenant_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        cursor = self._collection.find(
+            {"tenant_id": tenant_id},
+            {"_id": 0},
+            sort=[("updated_at", DESCENDING)],
+            limit=limit,
+        )
+        return list(cursor)
+
+    def summarize_task_metrics_for_tenant(self, *, tenant_id: str, window_hours: int = 24) -> dict[str, Any]:
+        now = _utc_now()
+        since = now - timedelta(hours=window_hours)
+        pipeline = [
+            {"$match": {"tenant_id": tenant_id, "updated_at": {"$gte": since}}},
+            {
+                "$group": {
+                    "_id": "$status",
+                    "count": {"$sum": 1},
+                }
+            },
+        ]
+        grouped = list(self._collection.aggregate(pipeline))
+        by_status = {item["_id"]: item["count"] for item in grouped}
+
+        total = sum(by_status.values())
+        success = by_status.get("SUCCESS", 0)
+        failures = by_status.get("FAILURE", 0)
+        success_rate = 0.0 if total == 0 else round((success / total) * 100, 2)
+
+        return {
+            "window_hours": window_hours,
+            "total": total,
+            "success": success,
+            "failures": failures,
+            "success_rate": success_rate,
+            "by_status": by_status,
+        }
+
 
 class AuditRepository:
     def __init__(self) -> None:
@@ -181,6 +219,24 @@ class AuditRepository:
                 "timestamp": _utc_now(),
             }
         )
+
+    def list_events_for_tenant(
+        self,
+        *,
+        tenant_id: str,
+        limit: int = 100,
+        action: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        query: dict[str, Any] = {"tenant_id": tenant_id}
+        if action:
+            query["action"] = action
+        cursor = self._collection.find(
+            query,
+            {"_id": 0},
+            sort=[("timestamp", DESCENDING)],
+            limit=limit,
+        )
+        return list(cursor)
 
 
 class CausalReportRepository:
