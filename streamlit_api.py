@@ -81,3 +81,52 @@ def wait_for_task_result(
         if time.time() - started > timeout_sec:
             raise TimeoutError(f"Task {task_id} timed out after {timeout_sec}s")
         time.sleep(POLL_INTERVAL_SEC)
+
+
+def fetch_dashboard_summary(*, token: str | None, request_id: str | None = None) -> dict[str, Any]:
+    trace_id = request_id or str(uuid.uuid4())
+    headers = _build_headers(token, trace_id)
+    resp = requests.get(
+        f"{API_BASE_URL}/dashboard/summary",
+        headers=headers,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    return body.get("data", body)
+
+
+def fetch_audit_events(
+    *,
+    token: str | None,
+    limit: int = 100,
+    action: str | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    trace_id = request_id or str(uuid.uuid4())
+    headers = _build_headers(token, trace_id)
+    params: dict[str, Any] = {"limit": limit}
+    if action:
+        params["action"] = action
+    resp = requests.get(
+        f"{API_BASE_URL}/operations/audit-events",
+        headers=headers,
+        params=params,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    return body.get("data", body)
+
+
+def fetch_quota_status(*, token: str | None, request_id: str | None = None) -> dict[str, Any]:
+    trace_id = request_id or str(uuid.uuid4())
+    headers = _build_headers(token, trace_id)
+    resp = requests.get(
+        f"{API_BASE_URL}/operations/quota",
+        headers=headers,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    return body.get("data", body)

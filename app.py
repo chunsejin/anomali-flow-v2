@@ -17,7 +17,13 @@ from bokeh.transform import transform, jitter
 from bokeh.layouts import column, row
 from prefect import flow, task
 from auth import build_request_context, decode_token, get_auth_settings
-from streamlit_api import submit_task, wait_for_task_result
+from streamlit_api import (
+    fetch_audit_events,
+    fetch_dashboard_summary,
+    fetch_quota_status,
+    submit_task,
+    wait_for_task_result,
+)
 
 # ?ê°???ì¤??
 #@task
@@ -513,6 +519,69 @@ def require_streamlit_roles(allowed_roles):
     return False
 
 
+def render_dashboard_panel():
+    st.header("Dashboard", divider=True)
+    try:
+        data = fetch_dashboard_summary(
+            token=st.session_state.get("auth_token"),
+            request_id=str(uuid.uuid4()),
+        )
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Failed to load dashboard summary: {exc}")
+        return
+
+    metrics = data.get("metrics", {})
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Active Tasks", data.get("active_tasks", 0))
+    c2.metric("Total(24h)", metrics.get("total", 0))
+    c3.metric("Success Rate(24h)", f"{metrics.get('success_rate', 0)}%")
+    c4.metric("Failures(24h)", metrics.get("failures", 0))
+
+    st.subheader("Recent Tasks")
+    tasks = data.get("recent_tasks", [])
+    if tasks:
+        st.dataframe(pd.DataFrame(tasks), use_container_width=True)
+    else:
+        st.info("No tasks found for this tenant.")
+
+
+def render_operations_panel():
+    st.header("Operations", divider=True)
+    left, right = st.columns(2)
+
+    with left:
+        st.subheader("Quota")
+        try:
+            quota = fetch_quota_status(
+                token=st.session_state.get("auth_token"),
+                request_id=str(uuid.uuid4()),
+            )
+            st.json(quota)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Failed to load quota status: {exc}")
+
+    with right:
+        st.subheader("Audit Filters")
+        limit = st.slider("Audit rows", min_value=10, max_value=300, value=100, step=10)
+        action = st.text_input("Action (optional)", value="")
+
+    st.subheader("Audit Events")
+    try:
+        audit_data = fetch_audit_events(
+            token=st.session_state.get("auth_token"),
+            limit=limit,
+            action=action.strip() or None,
+            request_id=str(uuid.uuid4()),
+        )
+        events = audit_data.get("events", [])
+        if events:
+            st.dataframe(pd.DataFrame(events), use_container_width=True)
+        else:
+            st.info("No audit events matched.")
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Failed to load audit events: {exc}")
+
+
 @task(log_prints=True)
 def submit_to_celery(df, algorithm, params, workflow_type, tenant_context):
     # API-first mode: Streamlit submits to FastAPI, and FastAPI enqueues Celery.
@@ -623,6 +692,14 @@ if __name__ == "__main__":
                 st.header("ë§ë  ?¬ë")
                 stage = st.sidebar.button('Our team')
                 
+
+            if stage == "Saved Workflows":
+                render_dashboard_panel()
+                st.stop()
+
+            if stage == "Monitor Workflows":
+                render_operations_panel()
+                st.stop()
 
             st.header("Data import" )
             uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
