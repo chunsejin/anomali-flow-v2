@@ -18,6 +18,7 @@ from bokeh.layouts import column, row
 from prefect import flow, task
 from celery.result import AsyncResult
 from worker import run_timeseries_workflow, run_categorical_workflow, run_numerical_workflow
+from auth import build_request_context, decode_token, get_auth_settings
 
 # 시각화 태스크
 #@task
@@ -466,6 +467,53 @@ def get_streamlit_tenant_context():
     }
 
 
+def _set_streamlit_auth_context(token: str):
+    settings = get_auth_settings()
+    claims = decode_token(token, settings)
+    context = build_request_context(claims, request_id=None)
+    st.session_state["tenant_id"] = context.tenant_id
+    st.session_state["actor_id"] = context.actor_id
+    st.session_state["roles"] = context.roles
+    st.session_state["plan_tier"] = context.plan_tier
+    st.session_state["auth_token"] = token
+    st.session_state["auth_ready"] = True
+
+
+def init_streamlit_auth_session():
+    settings = get_auth_settings()
+    if not settings.auth_enabled:
+        st.session_state.setdefault("tenant_id", "default")
+        st.session_state.setdefault("actor_id", "dev-user")
+        st.session_state.setdefault("roles", ["tenant_admin", "ml_operator", "viewer"])
+        st.session_state.setdefault("plan_tier", "standard")
+        st.session_state["auth_ready"] = True
+        return
+
+    st.session_state.setdefault("auth_ready", False)
+    with st.sidebar:
+        st.subheader("Auth Session")
+        token_input = st.text_input("Bearer Token", type="password", key="auth_token_input")
+        if st.button("Apply Token"):
+            try:
+                _set_streamlit_auth_context(token_input.strip())
+                st.success("Auth session initialized")
+            except Exception as exc:  # noqa: BLE001
+                st.session_state["auth_ready"] = False
+                st.error(f"Auth failed: {exc}")
+
+    if not st.session_state.get("auth_ready", False):
+        st.warning("Authentication required. Set Bearer token in sidebar.")
+        st.stop()
+
+
+def require_streamlit_roles(allowed_roles):
+    roles = set(st.session_state.get("roles", []))
+    if "platform_admin" in roles or roles.intersection(set(allowed_roles)):
+        return True
+    st.error("Insufficient role. Required: tenant_admin or ml_operator")
+    return False
+
+
 @task(log_prints=True)
 def submit_to_celery(df, algorithm, params, workflow_type, tenant_context):
     if workflow_type == 'timeseries':
@@ -519,6 +567,7 @@ def visualization_flow(result, graph_type, x_column, y_column, df, start_handle=
     create_visualizations(result, graph_type, x_column, y_column, df, start_handle, end_handle)
 
 st.set_page_config(layout="wide")  # 화면을 넓게 사용
+init_streamlit_auth_session()
 
 # 세션 상태 유지 (CSV 파일 및 모델 실행 상태 관리)
 if 'uploaded_file' not in st.session_state:
@@ -642,7 +691,10 @@ if __name__ == "__main__":
                         y_column = st.selectbox("Select Y-axis Feature", columns)
                         
                         if st.button("Run your workflow"):
-                            st.session_state.model_run = True
+                            if not require_streamlit_roles({"tenant_admin", "ml_operator"}):
+                                st.session_state.model_run = False
+                            else:
+                                st.session_state.model_run = True
                             if len(tabs) > 1 and st.session_state.model_run:
                                 with tabs[1]:
                                     st.title("AnomaliFlow Visualization")
@@ -694,7 +746,10 @@ if __name__ == "__main__":
                         y_column = st.selectbox("Select Y-axis Feature", columns)
 
                         if st.button("Run your workflow"):
-                            st.session_state.model_run = True
+                            if not require_streamlit_roles({"tenant_admin", "ml_operator"}):
+                                st.session_state.model_run = False
+                            else:
+                                st.session_state.model_run = True
                             if st.session_state.model_run:
                                 with tabs[1]:
                                     st.title("AnomaliFlow Visualization")
@@ -763,7 +818,10 @@ if __name__ == "__main__":
                         y_column = st.selectbox("Select Y-axis Feature", columns)
                         
                         if st.button("Run your workflow"):
-                            st.session_state.model_run = True
+                            if not require_streamlit_roles({"tenant_admin", "ml_operator"}):
+                                st.session_state.model_run = False
+                            else:
+                                st.session_state.model_run = True
                             if st.session_state.model_run:
                                 with tabs[1]:
                                     st.title("AnomaliFlow Visualization")
