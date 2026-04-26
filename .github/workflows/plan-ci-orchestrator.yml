@@ -56,6 +56,7 @@ jobs:
 
       - name: Sync Backlog Issues
         if: github.event_name != 'workflow_dispatch' || inputs.sync_issues == true
+        continue-on-error: true
         shell: bash
         run: |
           python scripts/sync_plan_issues.py \
@@ -65,6 +66,16 @@ jobs:
             --out-json artifacts/sync_issues.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show Sync Result
+        if: always()
+        shell: bash
+        run: |
+          if [ -f artifacts/sync_issues.json ]; then
+            cat artifacts/sync_issues.json
+          else
+            echo "artifacts/sync_issues.json was not produced."
+          fi
 
       - name: Run Plan Orchestrator
         id: orchestrator

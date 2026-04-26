@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 
 BACKLOG_ITEM_PATTERN = re.compile(r"^###\s+\d+\.\s+(.+?)\s*$")
@@ -85,6 +85,17 @@ def github_post(url: str, token: str, payload: dict) -> object:
     req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def parse_http_error(ex: urllib.error.HTTPError) -> Tuple[int, str]:
+    detail = ""
+    try:
+        raw = ex.read()
+        if raw:
+            detail = raw.decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        detail = ""
+    return ex.code, detail
 
 
 def fetch_existing_titles(repo: str, token: str) -> set[str]:
@@ -162,6 +173,10 @@ def main() -> int:
 
     try:
         existing = fetch_existing_titles(args.repo, args.token)
+    except urllib.error.HTTPError as ex:
+        code, detail = parse_http_error(ex)
+        print(f"Failed to fetch existing issues: HTTP {code} {detail}", file=sys.stderr)
+        return 1
     except Exception as ex:  # noqa: BLE001
         print(f"Failed to fetch existing issues: {ex}", file=sys.stderr)
         return 1
@@ -183,7 +198,13 @@ def main() -> int:
             created.append(item.title)
             existing.add(key)
         except urllib.error.HTTPError as ex:
-            errors.append(f"{item.title}: HTTP {ex.code}")
+            code, detail = parse_http_error(ex)
+            # Handle race condition: another runner may create the same title between list and create.
+            if code == 422 and "already exists" in detail.lower():
+                skipped.append(item.title)
+                existing.add(key)
+                continue
+            errors.append(f"{item.title}: HTTP {code} {detail}")
         except Exception as ex:  # noqa: BLE001
             errors.append(f"{item.title}: {ex}")
 
