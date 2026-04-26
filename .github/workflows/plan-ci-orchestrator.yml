@@ -1,0 +1,139 @@
+name: Plan CI Orchestrator
+
+on:
+  workflow_dispatch:
+    inputs:
+      sync_issues:
+        description: "Sync issue_backlog.md to GitHub Issues before orchestration"
+        required: false
+        default: true
+        type: boolean
+      auto_continue:
+        description: "Re-dispatch this workflow until the plan is complete"
+        required: false
+        default: true
+        type: boolean
+      round:
+        description: "Current orchestration round"
+        required: false
+        default: "1"
+        type: string
+      max_rounds:
+        description: "Maximum re-dispatch rounds"
+        required: false
+        default: "30"
+        type: string
+  schedule:
+    - cron: "*/30 * * * *"
+  push:
+    paths:
+      - "plan.md"
+      - "issue_backlog.md"
+      - "scripts/ci_orchestrator.py"
+      - ".github/workflows/plan-ci-orchestrator.yml"
+      - "main.py"
+      - "worker.py"
+      - "app.py"
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
+
+jobs:
+  orchestrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync Backlog Issues
+        if: github.event_name != 'workflow_dispatch' || inputs.sync_issues == true
+        shell: bash
+        run: |
+          python scripts/sync_plan_issues.py \
+            --backlog-file issue_backlog.md \
+            --repo "${GITHUB_REPOSITORY}" \
+            --token "${GITHUB_TOKEN}" \
+            --out-json artifacts/sync_issues.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Plan Orchestrator
+        id: orchestrator
+        shell: bash
+        run: |
+          set +e
+          python scripts/ci_orchestrator.py \
+            --plan-file plan.md \
+            --backlog-file issue_backlog.md \
+            --repo "${GITHUB_REPOSITORY}" \
+            --token "${GITHUB_TOKEN}" \
+            --out-json artifacts/plan_status.json \
+            --out-md artifacts/plan_status.md
+          exit_code=$?
+          echo "exit_code=${exit_code}" >> "${GITHUB_OUTPUT}"
+          if [ "${exit_code}" -eq 0 ]; then
+            echo "status=complete" >> "${GITHUB_OUTPUT}"
+          elif [ "${exit_code}" -eq 2 ]; then
+            echo "status=in_progress" >> "${GITHUB_OUTPUT}"
+          else
+            echo "status=error" >> "${GITHUB_OUTPUT}"
+          fi
+          exit 0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Plan Status Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan-status-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+
+      - name: Fail on CI Error
+        if: steps.orchestrator.outputs.status == 'error'
+        run: |
+          echo "Orchestrator reported an error."
+          exit 1
+
+      - name: Re-dispatch Until Complete
+        if: >
+          steps.orchestrator.outputs.status == 'in_progress' &&
+          github.event_name == 'workflow_dispatch' &&
+          inputs.auto_continue == true
+        shell: bash
+        run: |
+          current_round="${{ inputs.round }}"
+          max_rounds="${{ inputs.max_rounds }}"
+          next_round=$((current_round + 1))
+
+          echo "Current round: ${current_round}/${max_rounds}"
+          if [ "${current_round}" -ge "${max_rounds}" ]; then
+            echo "Reached max rounds. Stop re-dispatch."
+            exit 1
+          fi
+
+          echo "Plan still in progress. Re-dispatching round ${next_round}..."
+          curl -sS -L -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/plan-ci-orchestrator.yml/dispatches" \
+            -d "{\"ref\":\"${{ github.ref_name }}\",\"inputs\":{\"auto_continue\":\"true\",\"round\":\"${next_round}\",\"max_rounds\":\"${max_rounds}\"}}"
+
+      - name: Mark Incomplete on Push/Schedule
+        if: >
+          steps.orchestrator.outputs.status == 'in_progress' &&
+          github.event_name != 'workflow_dispatch'
+        run: |
+          echo "Plan is not complete yet. Waiting for next scheduled/push run."
+          exit 1
