@@ -1,55 +1,75 @@
-from fastapi import FastAPI, BackgroundTasks
-from pydantic import BaseModel
-from typing import Dict, Union, List, Optional
+from typing import Dict
+
 from celery.result import AsyncResult
-from worker import run_timeseries_workflow, run_categorical_workflow
+from fastapi import BackgroundTasks, Depends, FastAPI
+from pydantic import BaseModel
 from pymongo import MongoClient
+
 import celeryconfig
+from auth import RequestContext, require_request_context, require_roles
+from worker import run_categorical_workflow, run_timeseries_workflow
+
 
 app = FastAPI()
 
-client = MongoClient('mongo', 27017)
+client = MongoClient("mongo", 27017)
 db = client.celery_results
 collection = db.results
 
-# TaskRequest 모델 정의
+
 class TaskRequest(BaseModel):
-    df: Dict  # df를 딕셔너리 형태로 받음
+    df: Dict
     algorithm: str
     params: dict
 
-# Celery 태스크를 실행하고 백그라운드에서 상태를 확인
+
 @app.post("/tasks", response_model=dict)
-def run_task(request: TaskRequest, background_tasks: BackgroundTasks):
-    # Time series 또는 categorical 알고리즘에 따라 Celery 태스크를 실행
+def run_task(
+    request: TaskRequest,
+    background_tasks: BackgroundTasks,
+    context: RequestContext = Depends(require_request_context),
+):
+    require_roles(context, {"tenant_admin", "ml_operator"})
+
     if request.algorithm in ["DBSCAN", "KMeans"]:
         task = run_timeseries_workflow.delay(request.df, request.algorithm, request.params)
     else:
         task = run_categorical_workflow.delay(request.df, request.algorithm, request.params)
-    
-    # 백그라운드에서 작업 상태를 확인하도록 설정
-    background_tasks.add_task(check_task_status, task.id)
-    return {"task_id": task.id}
 
-# Celery 작업의 상태를 확인하는 함수
+    background_tasks.add_task(check_task_status, task.id)
+    return {
+        "task_id": task.id,
+        "tenant_id": context.tenant_id,
+        "submitted_by": context.actor_id,
+        "request_id": context.request_id,
+    }
+
+
 def check_task_status(task_id: str):
     result = AsyncResult(task_id)
-    if result.state == 'SUCCESS':
-        # 작업이 성공적으로 완료되면 결과를 MongoDB에 저장
+    if result.state == "SUCCESS":
         collection.insert_one({"task_id": task_id, "result": result.result})
         return result.result
     return {"status": result.state}
 
-# 작업 결과를 가져오는 엔드포인트
-@app.get("/tasks/{task_id}", response_model=dict)
-def get_task_result(task_id: str):
-    result = AsyncResult(task_id)
-    if result.state == 'SUCCESS':
-        # 작업이 성공적으로 완료된 경우 결과 반환
-        return {"status": result.state, "result": result.result}
-    elif result.state == 'FAILURE':
-        # 작업 실패 시 오류 메시지 반환
-        return {"status": result.state, "result": str(result.result)}
-    return {"status": result.state}
 
-    
+@app.get("/tasks/{task_id}", response_model=dict)
+def get_task_result(
+    task_id: str,
+    context: RequestContext = Depends(require_request_context),
+):
+    require_roles(context, {"tenant_admin", "ml_operator", "viewer"})
+
+    result = AsyncResult(task_id)
+    response = {
+        "status": result.state,
+        "tenant_id": context.tenant_id,
+        "request_id": context.request_id,
+    }
+
+    if result.state == "SUCCESS":
+        response["result"] = result.result
+    elif result.state == "FAILURE":
+        response["result"] = str(result.result)
+
+    return response

@@ -2,6 +2,7 @@ numpy==1.23.1
 fastapi
 uvicorn
 pydantic
+PyJWT[crypto]
 streamlit
 celery
 pymongo
