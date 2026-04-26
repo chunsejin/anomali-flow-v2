@@ -1,7 +1,9 @@
-from typing import Dict
+from typing import Any, Dict, Optional
+from uuid import uuid4
 
 from celery.result import AsyncResult
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import celeryconfig
@@ -13,12 +15,77 @@ from worker import run_categorical_workflow, run_timeseries_workflow
 app = FastAPI()
 task_result_repo = TaskResultRepository()
 audit_repo = AuditRepository()
+POLICY_VERSION = "v1"
 
 
 class TaskRequest(BaseModel):
     df: Dict
     algorithm: str
     params: dict
+
+
+class ErrorPayload(BaseModel):
+    code: str
+    message: str
+    details: Optional[dict[str, Any]] = None
+
+
+def build_success_response(context: RequestContext, data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "tenant_id": context.tenant_id,
+        "submitted_by": context.actor_id,
+        "trace_id": context.request_id,
+        "request_id": context.request_id,
+        "policy_version": POLICY_VERSION,
+        "data": data,
+        "error": None,
+    }
+
+
+def build_error_response(
+    *,
+    trace_id: str,
+    code: str,
+    message: str,
+    details: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    return {
+        "tenant_id": None,
+        "submitted_by": None,
+        "trace_id": trace_id,
+        "request_id": trace_id,
+        "policy_version": POLICY_VERSION,
+        "data": None,
+        "error": ErrorPayload(code=code, message=message, details=details).dict(),
+    }
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    trace_id = request.headers.get("x-request-id") or str(uuid4())
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=build_error_response(
+            trace_id=trace_id,
+            code=f"HTTP_{exc.status_code}",
+            message=str(exc.detail),
+            details=None,
+        ),
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    trace_id = request.headers.get("x-request-id") or str(uuid4())
+    return JSONResponse(
+        status_code=500,
+        content=build_error_response(
+            trace_id=trace_id,
+            code="INTERNAL_SERVER_ERROR",
+            message="Unexpected server error",
+            details={"error": str(exc)},
+        ),
+    )
 
 
 @app.post("/tasks", response_model=dict)
@@ -66,12 +133,13 @@ def run_task(
     )
 
     background_tasks.add_task(check_task_status, task.id)
-    return {
-        "task_id": task.id,
-        "tenant_id": context.tenant_id,
-        "submitted_by": context.actor_id,
-        "request_id": context.request_id,
-    }
+    return build_success_response(
+        context,
+        {
+            "task_id": task.id,
+            "status": "PENDING",
+        },
+    )
 
 
 def check_task_status(task_id: str):
@@ -122,16 +190,15 @@ def get_task_result(
         raise HTTPException(status_code=404, detail="Task not found")
 
     result = AsyncResult(task_id)
-    response = {
+    result_data = {
+        "task_id": task_id,
         "status": task_doc.get("status", result.state),
-        "tenant_id": context.tenant_id,
-        "request_id": context.request_id,
     }
 
     if result.state == "SUCCESS":
-        response["result"] = result.result
+        result_data["result"] = result.result
     elif result.state == "FAILURE":
-        response["result"] = str(result.result)
+        result_data["result"] = str(result.result)
 
     audit_repo.log_event(
         tenant_id=context.tenant_id,
@@ -141,7 +208,7 @@ def get_task_result(
         resource_id=task_id,
         result="success",
         request_id=context.request_id,
-        details={"status": response["status"]},
+        details={"status": result_data["status"]},
     )
 
-    return response
+    return build_success_response(context, result_data)
