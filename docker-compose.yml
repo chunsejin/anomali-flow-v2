@@ -7,7 +7,6 @@ services:
       - "6379:6379"
     networks:
       - mynetwork
-  
 
   mongo:
     image: mongo:latest
@@ -48,6 +47,19 @@ services:
     networks:
       - mynetwork
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      - VITE_API_BASE_URL=http://fastapi:8000
+    depends_on:
+      - fastapi
+    ports:
+      - "5173:5173"
+    networks:
+      - mynetwork
+
   streamlit:
     build: .
     command: streamlit run app.py --server.port=8501 --server.address=0.0.0.0
@@ -59,10 +71,9 @@ services:
       - fastapi
     networks:
       - mynetwork
-  
+
   orion:
     image: prefecthq/prefect:2.11.5-python3.11
-    #   restart: always
     volumes:
       - .:/prefect
     entrypoint: ["prefect", "orion", "start"]

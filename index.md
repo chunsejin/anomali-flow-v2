@@ -1,4 +1,4 @@
----
+﻿---
 layout: project
 title: anomali-flow/
 project: anomali-flow
@@ -7,40 +7,48 @@ permalink: /:path/:basename:output_ext
 ---
 
 # AnomaliFlow
-This application provides a robust framework for managing machine learning tasks using a combination of FastAPI, Celery, Streamlit, MongoDB, Prefect and Redis. The system allows users to upload datasets, select features, choose machine learning algorithms, and execute tasks asynchronously. Results and task statuses are displayed in real-time, leveraging the power of modern web technologies and scalable background task processing.
+This application provides a robust framework for managing machine learning tasks using FastAPI, Celery, MongoDB, Redis, Streamlit, and a React + TypeScript + Ant Design dashboard.
 
-## Features 
-- File Upload, Cloud Storage Mount, and Data Preview
-- Feature Engineering
-- ML/DL Algorithms Selection
-- Asynchronous Task & Workflow Execution
-- Real-time Status Updates
-- Results Display
-- API Documentation
+## Features
+- API-first asynchronous task execution (`/tasks`)
+- Tenant-aware task status, causal report, and action recommendation APIs
+- Operations APIs for dashboard summary, audit events, and quota
+- Streamlit legacy UI (parallel run)
+- React enterprise dashboard (new)
 
-## components
-- Swagger UI: API Documentation
-- Celery: asynchronous task queue/job queue based on distributed message passing
-- FastAPI: A modern, fast, web framework for building APIs 
-- MongoDB: NoSQL Database
-- Redis: in-memory data structure store
-- Streamlit: open-source app framework for Machine Learning and Data Science
-- Prefect: Data pipeline workflow ochestration
+## Components
+- FastAPI: API server
+- Celery: async workers
+- MongoDB: result/audit/report storage
+- Redis: broker
+- React + TypeScript + Ant Design: enterprise dashboard (`frontend/`)
+- Streamlit: legacy UI
 
-## run
-> docker-compose up --build -d
+## Run (recommended)
+> docker compose up --build -d redis mongo celery_worker fastapi frontend
 
-> docker-compose --profile prefect_server up
+Optional legacy UI:
+> docker compose up --build -d streamlit
 
-## access the application
-- Streamlit Interface: Open your browser and navigate to http://localhost:8501 to access the Streamlit interface.
-- Dash Interface: Open your browser and navigate to http://localhost:8050 to access the Dash interface.
-- API Documentation: Visit http://localhost:8000/docs to view the interactive API documentation provided by FastAPI.
-- Prefect Interface: Open your browser and navigate to http://localhost:4200 to access the Prefect interface.
+## Access
+- React Dashboard: http://localhost:5173
+- FastAPI Docs: http://localhost:8000/docs
+- Streamlit (legacy): http://localhost:8501
+- Prefect Orion: http://localhost:4200
 
-### ports
-- MongoDB: 27017  (use [Compass](https://www.mongodb.com/products/tools/compass))
-- Redis: 6379
-- FastAPI: 8000
-- Streamlit: 8501
-- Prefect: 4200 
+### Quick local test (without Docker)
+Backend:
+1. `python -m venv .venv`
+2. `.\\.venv\\Scripts\\activate`
+3. `pip install -r requirements.txt`
+4. `uvicorn main:app --reload --port 8000`
+
+Frontend:
+1. `cd frontend`
+2. `copy .env.example .env`
+3. `npm install`
+4. `npm run dev`
+
+### Validation commands
+- Backend compile check: `python -m compileall main.py worker.py repositories.py app.py`
+- Frontend lint/build: `cd frontend && npm run lint && npm run build`
