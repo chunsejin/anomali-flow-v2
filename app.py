@@ -16,16 +16,15 @@ from bokeh.models import LinearColorMapper,Spacer,Range1d, ColorBar, ColumnDataS
 from bokeh.transform import transform, jitter
 from bokeh.layouts import column, row
 from prefect import flow, task
-from celery.result import AsyncResult
-from worker import run_timeseries_workflow, run_categorical_workflow, run_numerical_workflow
 from auth import build_request_context, decode_token, get_auth_settings
+from streamlit_api import submit_task, wait_for_task_result
 
-# 시각화 태스크
+# ?ê°???ì¤??
 #@task
 #def create_visualizations(result, graph_type, x_column, y_column, df, selected_features):
 def create_visualizations(result, graph_type, x_column, y_column, df, start_handle=None, end_handle=None):
     
-    # outlier_indices 변수가 사용되기 전에 빈 리스트로 초기화
+    # outlier_indices ë³?ê? ?¬ì©?ê¸° ?ì ë¹?ë¦¬ì¤?¸ë¡ ì´ê¸°??
     outlier_indices = []
     
     outlier_indices = result.get('outlier_indices')
@@ -33,12 +32,12 @@ def create_visualizations(result, graph_type, x_column, y_column, df, start_hand
     root_cause_scores = result.get('root_cause_scores')
     index = result.get('index')
     
-    # Root Cause Score 히트맵 생성
+    # Root Cause Score ?í¸ë§??ì±
     if root_cause_scores:
-        # 시각화를 위한 데이터 준비
+        # ?ê°?ë? ?í ?°ì´??ì¤ë¹?
         timestamps = list(dict.fromkeys([str(ts) for ts in index if str(ts) in root_cause_scores]))
         features = list(next(iter(root_cause_scores.values())).keys())
-        # 히트맵 데이터 생성
+        # ?í¸ë§??°ì´???ì±
         heatmap_data = {
             'timestamp': [],
             'feature': [],
@@ -52,17 +51,17 @@ def create_visualizations(result, graph_type, x_column, y_column, df, start_hand
                 heatmap_data['feature'].append(feature)
                 heatmap_data['score'].append(score)
     
-        # 정규화
+        # ?ê·??
         scaler = MinMaxScaler(feature_range=(0, 100))
         normalized_scores = scaler.fit_transform(np.array(heatmap_data['score']).reshape(-1, 1)).flatten()
         heatmap_data['score'] = normalized_scores
     
         source = ColumnDataSource(data=heatmap_data)
     
-        # 색상 매퍼 생성
+        # ?ì ë§¤í¼ ?ì±
         mapper = LinearColorMapper(palette="Blues256", low=100, high=0)
         
-        # 히트맵 플롯 생성
+        # ?í¸ë§??ë¡¯ ?ì±
         p_heatmap = figure(
             title="Root Cause Scores Heatmap",
             x_range=timestamps,
@@ -85,11 +84,11 @@ def create_visualizations(result, graph_type, x_column, y_column, df, start_hand
             line_color=None
         )
     
-        # 색상 바 추가
+        # ?ì ë°?ì¶ê?
         color_bar = ColorBar(color_mapper=mapper, location=(0, 0))
         p_heatmap.add_layout(color_bar, 'right')
     
-        # 히트맵을 Streamlit에 표시
+        # ?í¸ë§µì Streamlit???ì
         st.bokeh_chart(p_heatmap)
         
         st.markdown("<br>", unsafe_allow_html=True)
@@ -97,29 +96,29 @@ def create_visualizations(result, graph_type, x_column, y_column, df, start_hand
 
         
         st.markdown(
-            "<p style='color:grey; font-size:12px; line-height:0.8;'>| outlier로 판별되는 근본적인 원인을 분석하고, 각 요소의 기여도를 점수로 시각화한 그래프입니다. </p>",
+            "<p style='color:grey; font-size:12px; line-height:0.8;'>| outlierë¡??ë³?ë ê·¼ë³¸?ì¸ ?ì¸??ë¶ì?ê³ , ê°??ì??ê¸°ì¬?ë? ?ìë¡??ê°?í ê·¸ë?ì?ë¤. </p>",
             unsafe_allow_html=True
         )
         
-        # 여백 추가
+        # ?¬ë°± ì¶ê?
         st.markdown("<br><br><br><br><br>", unsafe_allow_html=True)
 
-    # 추가 그래프
+    # ì¶ê? ê·¸ë??
     outlier_indices_all = [i for i in outlier_indices if pd.notna(i) and i in df.index]
     inlier_indices_all = [i for i in df.index if i not in outlier_indices_all]
     
     inliers_all = df.loc[inlier_indices_all] if inlier_indices_all is not None else pd.DataFrame()
     outliers_all = df.loc[outlier_indices_all] if outlier_indices_all is not None else pd.DataFrame()
     
-    # 전체 Data의 ColumnDataSource 생성
+    # ?ì²´ Data??ColumnDataSource ?ì±
     source_inliers_all = ColumnDataSource(data=dict(
         x=inlier_indices_all,
         y=inliers_all[y_column] if not inliers_all.empty else [],
     ))    
     
     source_outliers_all = ColumnDataSource(data=dict(
-        x=outlier_indices_all if outlier_indices_all is not None else [],  # outlier 인덱스 사용
-        y=outliers_all[y_column] if not outliers_all.empty else [],  # outlier 값
+        x=outlier_indices_all if outlier_indices_all is not None else [],  # outlier ?¸ë±???¬ì©
+        y=outliers_all[y_column] if not outliers_all.empty else [],  # outlier ê°?
     ))
     
     p_all = figure(title="Anomaly Score Graph", x_axis_label="Index", y_axis_label="Value", 
@@ -127,9 +126,9 @@ def create_visualizations(result, graph_type, x_column, y_column, df, start_hand
                tools="pan,wheel_zoom,box_zoom,reset", 
                tooltips=[("Index", "@x"), ("Value", "@y")])
     
-    # y축 범위 계산 및 확장
+    # yì¶?ë²ì ê³ì° ë°??ì¥
     y_min, y_max = min(inliers_all[y_column].min(), outliers_all[y_column].min()), max(inliers_all[y_column].max(), outliers_all[y_column].max())
-    y_extension = 2  # 추가하고 싶은 범위
+    y_extension = 2  # ì¶ê??ê³  ?¶ì? ë²ì
     p_all.y_range = Range1d(y_min - y_extension, y_max + y_extension)
     
     p_all.title.align = "center"
@@ -143,45 +142,45 @@ def create_visualizations(result, graph_type, x_column, y_column, df, start_hand
     p_all.yaxis.axis_label_text_font_style = "italic"
     p_all.yaxis.axis_label_text_font_size = "10pt"
 
-    # 전체 데이터의 그래프에 inliers와 outliers 그리기
+    # ?ì²´ ?°ì´?°ì ê·¸ë?ì inliers? outliers ê·¸ë¦¬ê¸?
     p_all.line(x='x', y='y', source=source_inliers_all, line_color='#3A7CA5', line_width=2, legend_label='Inliers')
     p_all.circle(x='x', y='y', source=source_outliers_all, color='#FF6B6B', size=6, legend_label='Outliers')
     
-    # Anomaly Score Graph 출력
+    # Anomaly Score Graph ì¶ë ¥
     st.bokeh_chart(p_all)
     
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown("<hr>", unsafe_allow_html=True)
 
     
-    # 그래프 위에 설명 추가
+    # ê·¸ë???ì ?¤ëª ì¶ê?
     st.markdown(
-        "<p style='color:grey; font-size:12px; line-height:0.8;'>| 전체 데이터에서의 outlier와 inlier의 분포를 나타내는 그래프입니다.</p>",
+        "<p style='color:grey; font-size:12px; line-height:0.8;'>| ?ì²´ ?°ì´?°ì?ì outlier? inlier??ë¶í¬ë¥??í??´ë ê·¸ë?ì?ë¤.</p>",
         unsafe_allow_html=True
     )
     
-    # 여백 추가
+    # ?¬ë°± ì¶ê?
     st.markdown("<br><br><br><br><br>", unsafe_allow_html=True)
     
     
-    # 입력 구간(start_handle, end_handle)에 해당하는 데이터만 선택
+    # ?ë ¥ êµ¬ê°(start_handle, end_handle)???´ë¹?ë ?°ì´?°ë§ ? í
     if start_handle is None or end_handle is None:
-        filtered_df = df  # 전체 데이터 사용
+        filtered_df = df  # ?ì²´ ?°ì´???¬ì©
     else:
-        # 위치 기반으로 입력된 범위에 해당하는 데이터를 필터링
+        # ?ì¹ ê¸°ë°?¼ë¡ ?ë ¥??ë²ì???´ë¹?ë ?°ì´?°ë? ?í°ë§?
         filtered_df = df.iloc[df.index.get_loc(start_handle):df.index.get_loc(end_handle) + 1]
 
 
-    # 이상치와 정상 데이터 구분
+    # ?´ìì¹ì? ?ì ?°ì´??êµ¬ë¶
     if outlier_indices is not None and len(outlier_indices) > 0:
         inliers = filtered_df.drop(outlier_indices)
         outliers = filtered_df.loc[outlier_indices]
     else:
         inliers = filtered_df
-        outliers = pd.DataFrame()  # 빈 DataFrame으로 처리
+        outliers = pd.DataFrame()  # ë¹?DataFrame?¼ë¡ ì²ë¦¬
 
 
-    # Inliers와 Outliers에 대해 각각의 ColumnDataSource 생성
+    # Inliers? Outliers?????ê°ê°??ColumnDataSource ?ì±
     source_inliers = ColumnDataSource(data=dict(
         x=inliers[x_column], 
         y=inliers[y_column],
@@ -197,7 +196,7 @@ def create_visualizations(result, graph_type, x_column, y_column, df, start_hand
     else:
         source_outliers = None
 
-    # Graph2 설정
+    # Graph2 ?¤ì 
     p_2d = figure(title=f"{x_column} vs {y_column}", 
                 tools="pan,wheel_zoom,box_zoom,reset", 
                 tooltips=[("X", "@x"), ("Y", "@y")])
@@ -213,7 +212,7 @@ def create_visualizations(result, graph_type, x_column, y_column, df, start_hand
     p_2d.yaxis.axis_label_text_font_style = "italic"
     p_2d.yaxis.axis_label_text_font_size = "10pt"
 
-    # 그래프 타입에 따른 그리기
+    # ê·¸ë????ì ?°ë¥¸ ê·¸ë¦¬ê¸?
     if graph_type == "Line Graph":
         p_2d.line(x='x', y='y', source=source_inliers, line_color='#3A7CA5', line_width=2, legend_label='Inliers')
         if source_outliers is not None:
@@ -232,13 +231,13 @@ def create_visualizations(result, graph_type, x_column, y_column, df, start_hand
         p_2d.y_range.start = 0
 
     if graph_type == "Scatter Plot (Jittered)":
-        # Inliers 데이터로 Scatter Plot (Jittering) 생성
+        # Inliers ?°ì´?°ë¡ Scatter Plot (Jittering) ?ì±
         p_2d.circle(x=jitter('x', width=0.1), y='y', source=source_inliers, color='#3A7CA5', size=6, legend_label='Inliers')
-        # Outliers 데이터가 존재하면 Outliers도 표시
+        # Outliers ?°ì´?°ê? ì¡´ì¬?ë©´ Outliers???ì
         if source_outliers is not None:
             p_2d.circle(x=jitter('x', width=0.1), y='y', source=source_outliers, color='#FF6B6B', size=6, legend_label='Outliers')
             
-        # x축 레이블에 원래 값 사용 (LabelEncoder 사용)
+        # xì¶??ì´ë¸ì ?ë ê°??¬ì© (LabelEncoder ?¬ì©)
         if x_column in label_encoders:
             x_ticks = sorted(set(inliers[x_column]))
             x_labels = label_encoders[x_column].inverse_transform(x_ticks)
@@ -248,34 +247,34 @@ def create_visualizations(result, graph_type, x_column, y_column, df, start_hand
             p_2d.xaxis.ticker = x_ticks
             p_2d.xaxis.major_label_overrides = {tick: label for tick, label in zip(x_ticks, x_labels)}
 
-        # y축 레이블에 원래 값 사용 (LabelEncoder 사용)
+        # yì¶??ì´ë¸ì ?ë ê°??¬ì© (LabelEncoder ?¬ì©)
         if y_column in label_encoders:
             y_ticks = sorted(set(inliers[y_column]))
             y_labels = label_encoders[y_column].inverse_transform(y_ticks)
             p_2d.yaxis.ticker = y_ticks
             p_2d.yaxis.major_label_overrides = {tick: label for tick, label in zip(y_ticks, y_labels)}
 
-        # x축 및 y축 레이블 설정
+        # xì¶?ë°?yì¶??ì´ë¸??¤ì 
         p_2d.xaxis.axis_label = x_column
         p_2d.yaxis.axis_label = y_column
 
-    # Hover tool 추가
+    # Hover tool ì¶ê?
     hover_tool_3 = HoverTool(tooltips=[('x', '@x'), ('y', '@y')], mode='vline')
     p_2d.add_tools(hover_tool_3)
 
-    # 테이블에 출력할 데이터를 저장할 ColumnDataSource 생성 (빈 데이터로 초기화)
+    # ?ì´ë¸ì ì¶ë ¥???°ì´?°ë? ??¥í  ColumnDataSource ?ì± (ë¹??°ì´?°ë¡ ì´ê¸°??
     selected_point_features = ColumnDataSource(data=dict(Feature=[], Value=[]))
 
-    # 테이블 컬럼 설정
+    # ?ì´ë¸?ì»¬ë¼ ?¤ì 
     columns = [
         TableColumn(field="Feature", title="Feature"),
         TableColumn(field="Value", title="Value"),
     ]
 
-    # DataTable 생성
+    # DataTable ?ì±
     data_table = DataTable(source=selected_point_features, columns=columns, width=400, height=280)
 
-    # TapTool 추가 및 콜백 연결
+    # TapTool ì¶ê? ë°?ì½ë°± ?°ê²°
     tap_callback = CustomJS(args=dict(source_outliers=source_outliers, source_inliers=source_inliers, selected_source=selected_point_features), code="""
     console.log("Callback triggered");
 
@@ -317,7 +316,7 @@ def create_visualizations(result, graph_type, x_column, y_column, df, start_hand
         source_outliers.selected.js_on_change('indices', tap_callback)
         source_inliers.selected.js_on_change('indices', tap_callback)
     
-    # 그래프와 설명 사이에 여백 추가 (필요 시)
+    # ê·¸ë?ì? ?¤ëª ?¬ì´???¬ë°± ì¶ê? (?ì ??
     st.markdown("<br>", unsafe_allow_html=True) 
     
 
@@ -326,10 +325,10 @@ def create_visualizations(result, graph_type, x_column, y_column, df, start_hand
     st.bokeh_chart(layout)  
     st.markdown("<hr>", unsafe_allow_html=True)
     
-    # 두 번째 그래프와 데이터 테이블
+    # ??ë²ì§¸ ê·¸ë?ì? ?°ì´???ì´ë¸?
     st.markdown(
-        "<p style='color:grey;font-size:12px; line-height:0.8;'>| 앞서 선택한 두 개의 feature를 기준으로 outlier와 inlier의 분포를 시각화한 그래프입니다. </p>"
-        "<p style='color:grey; font-size:12px; line-height:0.8;'>  더 자세히 확인하고 싶은 point를 클릭해보세요. 오른쪽 table에서 선택한 point에 대한 세부사항을 확인할 수 있습니다.</p>",
+        "<p style='color:grey;font-size:12px; line-height:0.8;'>| ?ì ? í????ê°ì featureë¥?ê¸°ì??¼ë¡ outlier? inlier??ë¶í¬ë¥??ê°?í ê·¸ë?ì?ë¤. </p>"
+        "<p style='color:grey; font-size:12px; line-height:0.8;'>  ???ì¸???ì¸?ê³  ?¶ì? pointë¥??´ë¦­?´ë³´?¸ì. ?¤ë¥¸ìª?table?ì ? í??point??????¸ë??¬í­???ì¸?????ìµ?ë¤.</p>",
         unsafe_allow_html=True
     )
     
@@ -338,19 +337,19 @@ def create_visualizations(result, graph_type, x_column, y_column, df, start_hand
     
 
 
-######## Time Series 데이터 Prefect워크플로우 and tasks ########
-# 데이터 로드 및 유형 감지
+######## Time Series ?°ì´??Prefect?í¬?ë¡??and tasks ########
+# ?°ì´??ë¡ë ë°?? í ê°ì?
 def classify_dataset(df):
     num_cols = len(df.columns)
     
-    # Time series: 시간 관련 열이 존재하는지 확인
+    # Time series: ?ê° ê´???´ì´ ì¡´ì¬?ëì§ ?ì¸
     time_series_cols = [col for col in df.columns if pd.api.types.is_datetime64_any_dtype(df[col]) or 
                         (df[col].dtype == 'object' and pd.to_datetime(df[col], errors='coerce').notna().any())]
 
     if time_series_cols:
         return 'time_series'
 
-    # Categorical: 열의 고유한 값이 일정 임계치 미만이면 categorical로 분류
+    # Categorical: ?´ì ê³ ì ??ê°ì´ ?¼ì  ?ê³ì¹?ë¯¸ë§?´ë©´ categoricalë¡?ë¶ë¥
     categorical_count = sum(
         (df[col].dtype == 'object' or df[col].nunique() / len(df) < 0.05)
         for col in df.columns
@@ -358,27 +357,27 @@ def classify_dataset(df):
     if categorical_count / num_cols > 0.5:
         return 'categorical'
 
-    # Numerical: 대부분의 열이 숫자형인 경우
+    # Numerical: ?ë¶ë¶ì ?´ì´ ?«ì?ì¸ ê²½ì°
     numerical_count = sum(np.issubdtype(df[col].dtype, np.number) for col in df.columns)
     if numerical_count / num_cols > 0.5:
         return 'numerical' # 'numerical'
     
     return 'unknown'
 
-# 데이터 전처리
+# ?°ì´???ì²ë¦?
 def timeseries_preprocess(df, tensor_rank, sliding_window_size):
-    # 0번째 열을 따로 저장 (원본 데이터 그대로 사용)
+    # 0ë²ì§¸ ?´ì ?°ë¡ ???(?ë³¸ ?°ì´??ê·¸ë?ë¡??¬ì©)
     first_col = df.iloc[:, 0]
 
-    # 나머지 열만 전처리 진행
+    # ?ë¨¸ì§ ?´ë§ ?ì²ë¦?ì§í
     df_processed = df.iloc[:, 1:].copy()
     
     for col in df_processed.columns:
-        # 숫자 변환이 필요한 경우를 대비해 모든 열을 숫자로 변환
-        df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')  # 변환할 수 없는 값을 NaN으로 처리
+        # ?«ì ë³?ì´ ?ì??ê²½ì°ë¥??ë¹í´ ëª¨ë  ?´ì ?«ìë¡?ë³??
+        df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')  # ë³?í  ???ë ê°ì NaN?¼ë¡ ì²ë¦¬
         df_processed[col] = df_processed[col].fillna(df_processed[col].median())
 
-        # 슬라이딩 윈도우 적용
+        # ?¬ë¼?´ë© ?ë???ì©
         data = df_processed[col].to_numpy()
         T = len(data)
         N = T - sliding_window_size + 1
@@ -390,10 +389,10 @@ def timeseries_preprocess(df, tensor_rank, sliding_window_size):
         sliding_windows = np.mean(sliding_windows, axis=1)
         df_processed[col] = pd.Series(sliding_windows, index=df_processed.index[:len(sliding_windows)])
 
-    # NaN 값을 중앙값으로 대체
+    # NaN ê°ì ì¤ìê°ì¼ë¡??ì²?
     df_processed = df_processed.fillna(df_processed.median())
 
-    # 0번째 열을 다시 결합하여 반환
+    # 0ë²ì§¸ ?´ì ?¤ì ê²°í©?ì¬ ë°í
     df_processed.insert(0, first_col.name, first_col)
 
     return df_processed
@@ -401,62 +400,62 @@ def timeseries_preprocess(df, tensor_rank, sliding_window_size):
 
 
 def categorical_preprocess(df):
-    # 0번째 열을 따로 저장 (원본 데이터 그대로 사용)
+    # 0ë²ì§¸ ?´ì ?°ë¡ ???(?ë³¸ ?°ì´??ê·¸ë?ë¡??¬ì©)
     first_col = df.iloc[:, 0]
 
-    # 나머지 열만 전처리 진행
+    # ?ë¨¸ì§ ?´ë§ ?ì²ë¦?ì§í
     df_processed = df.iloc[:, 1:].copy()
     
     label_encoders = {}
     for column in df_processed.columns:
-        # Categorical 열인지 확인
+        # Categorical ?´ì¸ì§ ?ì¸
         if df_processed[column].dtype == 'object' or pd.api.types.is_categorical_dtype(df_processed[column]):
-            # LabelEncoder를 사용해 범주형 데이터를 숫자로 변환
+            # LabelEncoderë¥??¬ì©??ë²ì£¼???°ì´?°ë? ?«ìë¡?ë³??
             le = LabelEncoder()
             df_processed[column] = le.fit_transform(df_processed[column])
-            label_encoders[column] = le  # 나중에 변환할 때 사용할 수 있도록 저장
+            label_encoders[column] = le  # ?ì¤??ë³?í  ???¬ì©?????ëë¡????
 
-    # 0번째 열을 다시 결합하여 반환
+    # 0ë²ì§¸ ?´ì ?¤ì ê²°í©?ì¬ ë°í
     df_processed.insert(0, first_col.name, first_col)
 
     return df_processed, label_encoders
 
 def numerical_preprocess(df, tensor_rank):
-    # 0번째 열을 따로 저장 (원본 데이터 그대로 사용)
+    # 0ë²ì§¸ ?´ì ?°ë¡ ???(?ë³¸ ?°ì´??ê·¸ë?ë¡??¬ì©)
     first_col = df.iloc[:, 0]
 
-    # 나머지 열만 전처리 진행
+    # ?ë¨¸ì§ ?´ë§ ?ì²ë¦?ì§í
     df_processed = df.iloc[:, 1:].copy()
     scaler = StandardScaler()
 
     for col in df_processed.columns:
-        # 작은 따옴표로 묶인 문자열을 처리하여 float으로 변환
-        if df_processed[col].dtype == object:  # 문자열로 인식되는 경우
+        # ?ì? ?°ì´?ë¡ ë¬¶ì¸ ë¬¸ì?´ì ì²ë¦¬?ì¬ float?¼ë¡ ë³??
+        if df_processed[col].dtype == object:  # ë¬¸ì?´ë¡ ?¸ì?ë ê²½ì°
             df_processed[col] = df_processed[col].str.replace("'", "").astype(float)
 
-        # 열이 numerical인지 확인 (숫자형 열만 텐서 분해 적용)
+        # ?´ì´ numerical?¸ì? ?ì¸ (?«ì???´ë§ ?ì ë¶í´ ?ì©)
         if np.issubdtype(df_processed[col].dtype, np.number):
             data = df_processed[col].to_numpy().reshape(-1, 1)
 
-            # 데이터 스케일링 적용
+            # ?°ì´???¤ì??¼ë§ ?ì©
             scaled_data = scaler.fit_transform(data)
 
-            # 텐서 분해 적용
+            # ?ì ë¶í´ ?ì©
             tensor = tl.tensor(scaled_data)
             factors = parafac(tensor, rank=tensor_rank)
             reconstructed_tensor = tl.kruskal_to_tensor(factors)
             df_processed[col] = pd.Series(reconstructed_tensor.flatten(), index=df_processed.index)
 
-        # NaN 값 중앙값으로 대체 (숫자형 열만)
+        # NaN ê°?ì¤ìê°ì¼ë¡??ì²?(?«ì???´ë§)
         df_processed[col] = df_processed[col].fillna(df_processed[col].median())
 
-    # 0번째 열을 다시 결합하여 반환
+    # 0ë²ì§¸ ?´ì ?¤ì ê²°í©?ì¬ ë°í
     df_processed.insert(0, first_col.name, first_col)
 
     return df_processed
 
 
-# Prefect 태스크: Celery에 작업을 넘기는 함수
+# Prefect ?ì¤?? Celery???ì???ê¸°???¨ì
 def get_streamlit_tenant_context():
     return {
         "tenant_id": st.session_state.get("tenant_id", "default"),
@@ -516,68 +515,71 @@ def require_streamlit_roles(allowed_roles):
 
 @task(log_prints=True)
 def submit_to_celery(df, algorithm, params, workflow_type, tenant_context):
-    if workflow_type == 'timeseries':
-        task = run_timeseries_workflow.apply_async(args=[df, algorithm, params, tenant_context])
-    elif workflow_type == 'categorical':
-        task = run_categorical_workflow.apply_async(args=[df, algorithm, params, tenant_context])
-    elif workflow_type == 'numerical':
-        task = run_numerical_workflow.apply_async(args=[df, algorithm, params, tenant_context])
-    
-    return task.id  # 작업 ID 반환
+    # API-first mode: Streamlit submits to FastAPI, and FastAPI enqueues Celery.
+    task_id, trace_id = submit_task(
+        df_records=df,
+        algorithm=algorithm,
+        params=params,
+        token=st.session_state.get("auth_token"),
+        request_id=tenant_context["request_id"],
+    )
+    return {"task_id": task_id, "trace_id": trace_id}
 
-# Prefect 태스크: Celery 작업의 결과를 가져오는 함수
+# Prefect ?ì¤?? Celery ?ì??ê²°ê³¼ë¥?ê°?¸ì¤???¨ì
 @task(log_prints=True)
-def get_celery_result(task_id):
-    task_result = AsyncResult(task_id)
-    if task_result.ready():
-        return task_result.result
-    else:
-        return "Task is still running..."
+def get_celery_result(task_meta):
+    return wait_for_task_result(
+        task_id=task_meta["task_id"],
+        token=st.session_state.get("auth_token"),
+        request_id=task_meta["trace_id"],
+    )
 
-######## Time Series  데이터 Prefect 워크플로우 ########
+######## Time Series  ?°ì´??Prefect ?í¬?ë¡??########
 @flow(log_prints=True)
 def timeseries_workflow(df, algorithm, params, tenant_context):
-    # Celery worker에 작업을 넘김
-    task_id = submit_to_celery(df, algorithm, params, 'timeseries', tenant_context)
-    # Celery 작업의 결과를 가져옴
-    result = get_celery_result(task_id)
+    task_meta = submit_to_celery(df, algorithm, params, 'timeseries', tenant_context)
+    result = get_celery_result(task_meta)
     return result
 
-######## Categorical  데이터 Prefect 워크플로우 ########
+######## Categorical  ?°ì´??Prefect ?í¬?ë¡??########
 @flow(log_prints=True)
 def categorical_workflow(df, algorithm, params, tenant_context):
-    # Celery worker에 작업을 넘김
-    task_id = submit_to_celery(df, algorithm, params, 'categorical', tenant_context)
-    # Celery 작업의 결과를 가져옴
-    result = get_celery_result(task_id)
+    task_meta = submit_to_celery(df, algorithm, params, 'categorical', tenant_context)
+    result = get_celery_result(task_meta)
     return result
 
-######## Numerical  데이터 Prefect 워크플로우 ########
+######## Numerical  ?°ì´??Prefect ?í¬?ë¡??########
 @flow(log_prints=True)
 def numerical_workflow(df, algorithm, params, tenant_context):
-    # Celery worker에 작업을 넘김
-    task_id = submit_to_celery(df, algorithm, params, 'numerical', tenant_context)
-    # Celery 작업의 결과를 가져옴
-    result = get_celery_result(task_id)
+    task_meta = submit_to_celery(df, algorithm, params, 'numerical', tenant_context)
+    result = get_celery_result(task_meta)
     return result
 
-######## 시각화 ########
+
+def extract_visualization_result(result):
+    if isinstance(result, dict):
+        payload = result.get("result")
+        if isinstance(payload, dict):
+            return payload
+    return result
+
+######## ?ê°??########
 @flow
 def visualization_flow(result, graph_type, x_column, y_column, df, start_handle=None, end_handle=None):
     create_visualizations(result, graph_type, x_column, y_column, df, start_handle, end_handle)
 
-st.set_page_config(layout="wide")  # 화면을 넓게 사용
+st.set_page_config(layout="wide")  # ?ë©´???ê² ?¬ì©
 init_streamlit_auth_session()
 
-# 세션 상태 유지 (CSV 파일 및 모델 실행 상태 관리)
+# ?¸ì ?í ? ì? (CSV ?ì¼ ë°?ëª¨ë¸ ?¤í ?í ê´ë¦?
 if 'uploaded_file' not in st.session_state:
     st.session_state.uploaded_file = None
 
-# 쿼리 파라미터 확인
+# ì¿¼ë¦¬ ?ë¼ë¯¸í° ?ì¸
 if 'model_run' not in st.session_state:
     st.session_state.model_run = False
 
-# 기본적으로는 Configuration 탭만 존재
+# ê¸°ë³¸?ì¼ë¡ë Configuration ??§ ì¡´ì¬
 if st.session_state.model_run:
     tabs = st.tabs(["Configuration Page", "Visualization Page"])
 else:
@@ -585,21 +587,21 @@ else:
 
 if __name__ == "__main__":
     with tabs[0]:
-        # Streamlit 인터페이스
+        # Streamlit ?¸í°?ì´??
         col1, col2 = st.columns(2)
         with col1:
             # st.set_page_config(page_title="AnomaliFlow: Distributed Execution of Reusable ML Workflows", page_icon=":material/edit:")
             st.title("AnomaliFlow")
             
             st.markdown("""
-                        AnomaliFlow는 분산 환경에서 재사용 가능한 머신러닝 워크플로우를 실행하기 위한 강력한 도구입니다. 이 플랫폼은 복잡한 머신러닝 파이프라인을 손쉽게 구성하고, 이를 여러 컴퓨팅 노드에 분산하여 빠르게 처리할 수 있도록 돕습니다. 다양한 데이터셋과 머신러닝 모델을 효과적으로 결합하고, 유연한 실행을 가능하게 하여 사용자에게 높은 생산성을 제공합니다.
+                        AnomaliFlow??ë¶ì° ?ê²½?ì ?¬ì¬??ê°?¥í ë¨¸ì ?¬ë ?í¬?ë¡?°ë? ?¤í?ê¸° ?í ê°ë ¥???êµ¬?ë?? ???ë«?¼ì? ë³µì¡??ë¨¸ì ?¬ë ?ì´?ë¼?¸ì ?ì½ê²?êµ¬ì±?ê³ , ?´ë? ?¬ë¬ ì»´í¨???¸ë??ë¶ì°?ì¬ ë¹ ë¥´ê²?ì²ë¦¬?????ëë¡??ìµ?ë¤. ?¤ì???°ì´?°ìê³?ë¨¸ì ?¬ë ëª¨ë¸???¨ê³¼?ì¼ë¡?ê²°í©?ê³ , ? ì°???¤í??ê°?¥íê²??ì¬ ?¬ì©?ìê²??ì? ?ì°?±ì ?ê³µ?©ë??
 
-                        주요 기능:
-                        - **분산 컴퓨팅 지원**: 여러 노드에서 병렬 처리를 통해 대용량 데이터 및 복잡한 모델도 빠르게 처리 가능합니다.
-                        - **워크플로우 재사용성**: 반복적인 작업을 자동화하고, 다양한 환경에서도 동일한 워크플로우를 쉽게 재사용할 수 있습니다.
-                        - **확장성**: 다양한 ML 프레임워크 및 툴과의 통합을 지원하여 확장성과 유연성을 제공합니다.
+                        ì£¼ì ê¸°ë¥:
+                        - **ë¶ì° ì»´í¨??ì§??*: ?¬ë¬ ?¸ë?ì ë³ë ¬ ì²ë¦¬ë¥??µí´ ??©ë ?°ì´??ë°?ë³µì¡??ëª¨ë¸??ë¹ ë¥´ê²?ì²ë¦¬ ê°?¥í©?ë¤.
+                        - **?í¬?ë¡???¬ì¬?©ì±**: ë°ë³µ?ì¸ ?ì???ë?íê³? ?¤ì???ê²½?ì???ì¼???í¬?ë¡?°ë? ?½ê² ?¬ì¬?©í  ???ìµ?ë¤.
+                        - **?ì¥??*: ?¤ì??ML ?ë ?ì??ë°??´ê³¼???µí©??ì§?í???ì¥?±ê³¼ ? ì°?±ì ?ê³µ?©ë??
 
-                        이 플랫폼을 통해 보다 효율적이고 간편한 머신러닝 개발을 경험해보세요.
+                        ???ë«?¼ì ?µí´ ë³´ë¤ ?¨ì¨?ì´ê³?ê°í¸??ë¨¸ì ?¬ë ê°ë°??ê²½í?´ë³´?¸ì.
                         """)
             # sidebar
             with st.sidebar:
@@ -608,17 +610,17 @@ if __name__ == "__main__":
                             Distributed Execution of Reusable ML Workflows
                             """)
                 st.divider()
-                st.header("💻 주요 기능")
+                st.header("?» ì£¼ì ê¸°ë¥")
                 stage = st.sidebar.button('About')
                                         
-                st.header("⚙ ML Models") 
+                st.header("??ML Models") 
                 stage = st.sidebar.button('Supported ML Models')
 
-                # http://localhost:4200/dashboard 와의 연동
-                st.header("📊 Workflow Management")
+                # http://localhost:4200/dashboard ????°ë
+                st.header("? Workflow Management")
                 stage = st.sidebar.radio("Choose Step", ['Home', 'Saved Workflows', 'Monitor Workflows'])
 
-                st.header("만든 사람")
+                st.header("ë§ë  ?¬ë")
                 stage = st.sidebar.button('Our team')
                 
 
@@ -657,14 +659,14 @@ if __name__ == "__main__":
                         time_series_model = st.selectbox("Select a Model", ["IsolationForest", "GMM"])
                         
                         
-                        # # 양방향 슬라이더
+                        # # ?ë°©???¬ë¼?´ë
                         # preview_handle_range = st.slider(
                         #     "Filtering range for data points", 
                         #     1, len(df), 
-                        #     value=(1, 1500)  # 초기값 범위 설정 (시작점, 끝점)
+                        #     value=(1, 1500)  # ì´ê¸°ê°?ë²ì ?¤ì  (?ì?? ?ì )
                         # )
 
-                        # # 타임 필터링
+                        # # ????í°ë§?
                         # start_handle, end_handle = map(int, preview_handle_range)
                         # selected_data = df[start_handle:end_handle]
 
@@ -698,9 +700,9 @@ if __name__ == "__main__":
                             if len(tabs) > 1 and st.session_state.model_run:
                                 with tabs[1]:
                                     st.title("AnomaliFlow Visualization")
-                                    # Celery worker에 비동기 작업 요청
+                                    # Celery worker??ë¹ëê¸??ì ?ì²­
                                     df_dict = df.to_dict(orient='records')
-                                    result = run_timeseries_workflow(
+                                    result = timeseries_workflow(
                                         df_dict,
                                         time_series_model,
                                         params,
@@ -710,8 +712,9 @@ if __name__ == "__main__":
                                     # Visualization step
                                     if result:
                                         st.write("Workflow Completed! Visualizing Results...")
+                                        viz_result = extract_visualization_result(result)
                                         # Call visualization function
-                                        visualization_flow(result, graph_type, x_column, y_column, df, None, None)
+                                        visualization_flow(viz_result, graph_type, x_column, y_column, df, None, None)
                                         st.write(result)
                                         #visualization_flow(result, graph_type, x_column, y_column, df, start_handle, end_handle)    
                     
@@ -722,7 +725,7 @@ if __name__ == "__main__":
                         # Data Preprocessing
                         df, label_encoders = categorical_preprocess(df)
 
-                        # Algorithm select (데이터 유형별로 다르게)
+                        # Algorithm select (?°ì´??? íë³ë¡ ?¤ë¥´ê²?
                         algorithm = st.selectbox("Select a Model", ["DBSCAN", "LOF"])
 
                         # threshold_handle = st.slider("Threshold", 0.0, 1.0, value=0.5)
@@ -730,7 +733,7 @@ if __name__ == "__main__":
                         # parameters
                         params = {}
                         if algorithm == "DBSCAN":
-                            eps = st.slider("epsilon(Ɛ)", min_value=0.01, max_value=10.00, value=0.05)
+                            eps = st.slider("epsilon(?)", min_value=0.01, max_value=10.00, value=0.05)
                             min_samples = st.slider("The mininum number of samples", min_value=1, max_value=100, value=5)
                             params = {"eps": eps, "min_samples": min_samples, "n_jobs" : n_jobs}
                         elif algorithm == "LOF":
@@ -753,9 +756,9 @@ if __name__ == "__main__":
                             if st.session_state.model_run:
                                 with tabs[1]:
                                     st.title("AnomaliFlow Visualization")
-                                    # Celery worker에 비동기 작업 요청
+                                    # Celery worker??ë¹ëê¸??ì ?ì²­
                                     df_dict = df.to_dict(orient='records')
-                                    result = run_categorical_workflow(
+                                    result = categorical_workflow(
                                         df_dict,
                                         algorithm,
                                         params,
@@ -766,8 +769,9 @@ if __name__ == "__main__":
                                     if result:
                                         st.write("Workflow Completed! Visualizing Results...")
                                         st.write(result)
+                                        viz_result = extract_visualization_result(result)
                                         # Call visualization function
-                                        visualization_flow(result, graph_type, x_column, y_column, df, None, None)
+                                        visualization_flow(viz_result, graph_type, x_column, y_column, df, None, None)
 
                     # Numerical Data
                     if data_type == 'numerical':
@@ -797,7 +801,7 @@ if __name__ == "__main__":
                             params['random_state'] = st.number_input("Random state", 0, 1000, value=42)
                             params['init_params'] = 'kmeans'
                         elif numerical_model == "DBSCAN":
-                            eps = st.slider("epsilon(Ɛ)", min_value=0.01, max_value=10.00, value=0.05)
+                            eps = st.slider("epsilon(?)", min_value=0.01, max_value=10.00, value=0.05)
                             min_samples = st.slider("The mininum number of samples", min_value=1, max_value=100, value=5)
                             params = {"eps": eps, "min_samples": min_samples, "n_jobs" : n_jobs}
                         elif numerical_model == "LOF":
@@ -825,9 +829,9 @@ if __name__ == "__main__":
                             if st.session_state.model_run:
                                 with tabs[1]:
                                     st.title("AnomaliFlow Visualization")
-                                    # Celery worker에 비동기 작업 요청
+                                    # Celery worker??ë¹ëê¸??ì ?ì²­
                                     df_dict = df.to_dict(orient='records')
-                                    result = run_numerical_workflow(
+                                    result = numerical_workflow(
                                         df_dict,
                                         numerical_model,
                                         params,
@@ -838,5 +842,7 @@ if __name__ == "__main__":
                                     if result:
                                         st.write("Workflow Completed! Visualizing Results...")
                                         st.write(result)
+                                        viz_result = extract_visualization_result(result)
                                         # Call visualization function
-                                        visualization_flow(result, graph_type, x_column, y_column, df, None, None)
+                                        visualization_flow(viz_result, graph_type, x_column, y_column, df, None, None)
+
