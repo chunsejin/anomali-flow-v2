@@ -29,6 +29,12 @@ class TaskResultRepository:
             [("tenant_id", ASCENDING), ("created_at", DESCENDING)],
             name="tenant_created_at_desc",
         )
+        self._collection.create_index(
+            [("tenant_id", ASCENDING), ("idempotency_key", ASCENDING)],
+            unique=True,
+            sparse=True,
+            name="tenant_idempotency_unique",
+        )
 
     def create_submitted_task(
         self,
@@ -68,6 +74,7 @@ class TaskResultRepository:
         tenant_id: str,
         task_id: str,
         status: str,
+        idempotency_key: Optional[str] = None,
         algorithm: Optional[str] = None,
         params: Optional[dict[str, Any]] = None,
         created_by: Optional[str] = None,
@@ -87,6 +94,8 @@ class TaskResultRepository:
             set_fields["plan_tier"] = plan_tier
         if algorithm is not None:
             set_fields["algorithm"] = algorithm
+        if idempotency_key is not None:
+            set_fields["idempotency_key"] = idempotency_key
         if params is not None:
             set_fields["params"] = params
         if created_by is not None:
@@ -121,6 +130,17 @@ class TaskResultRepository:
 
     def get_task_by_task_id(self, *, task_id: str) -> Optional[dict[str, Any]]:
         return self._collection.find_one({"task_id": task_id}, {"_id": 0})
+
+    def get_task_by_idempotency(self, *, tenant_id: str, idempotency_key: str) -> Optional[dict[str, Any]]:
+        return self._collection.find_one(
+            {"tenant_id": tenant_id, "idempotency_key": idempotency_key},
+            {"_id": 0},
+        )
+
+    def count_active_tasks_for_tenant(self, *, tenant_id: str) -> int:
+        return self._collection.count_documents(
+            {"tenant_id": tenant_id, "status": {"$in": ["PENDING", "STARTED", "RETRY"]}}
+        )
 
 
 class AuditRepository:
