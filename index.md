@@ -48,7 +48,10 @@ Frontend:
 2. `copy .env.example .env`
 3. `npm install`
 4. `npm run dev`
+5. `npx playwright install chromium`
+6. `npm run test:e2e`
 
 ### Validation commands
 - Backend compile check: `python -m compileall main.py worker.py repositories.py app.py`
 - Frontend lint/build: `cd frontend && npm run lint && npm run build`
+- Frontend E2E smoke: `cd frontend && npm run test:e2e`
