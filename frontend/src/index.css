@@ -19,3 +19,12 @@ pre {
   word-break: break-word;
 }
 
+.mobile-bottom-nav {
+  position: fixed;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 1000;
+  border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
+}

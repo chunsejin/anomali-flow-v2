@@ -5,11 +5,14 @@ import {
   Card,
   Col,
   ConfigProvider,
+  Grid,
   Input,
   Layout,
   Menu,
   Row,
+  Segmented,
   Space,
+  Spin,
   Statistic,
   Table,
   Tabs,
@@ -25,13 +28,18 @@ import {
   LockOutlined,
   PlayCircleOutlined,
   SafetyCertificateOutlined,
+  ShareAltOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import { getEnvelope, api, authHeader } from "./api";
 
 const { Header, Content, Sider } = Layout;
 const { Title, Text } = Typography;
+const { useBreakpoint } = Grid;
 
-type NavKey = "dashboard" | "run" | "result" | "operations";
+type NavKey = "dashboard" | "run" | "result" | "causal" | "recommendation" | "operations";
+type Role = "tenant_admin" | "ml_operator" | "viewer";
+type ViewState = "idle" | "loading" | "error" | "success";
 
 type DashboardSummary = {
   metrics: {
@@ -63,17 +71,128 @@ type QuotaData = {
   remaining_capacity: number;
 };
 
-function AuthPanel({ token, setToken }: { token: string; setToken: (v: string) => void }) {
+function canExecute(role: Role) {
+  return role === "tenant_admin" || role === "ml_operator";
+}
+
+function decodeRolesFromToken(token: string): Role[] {
+  if (!token || !token.includes(".")) return [];
+  try {
+    const payload = token.split(".")[1];
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const decoded = JSON.parse(atob(normalized));
+    const candidates = [
+      ...(Array.isArray(decoded.roles) ? decoded.roles : []),
+      ...(Array.isArray(decoded.role) ? decoded.role : []),
+      typeof decoded.role === "string" ? decoded.role : "",
+      ...(Array.isArray(decoded["https://anomali-flow/roles"])
+        ? decoded["https://anomali-flow/roles"]
+        : []),
+    ]
+      .filter(Boolean)
+      .map((v: unknown) => String(v));
+
+    const roles: Role[] = [];
+    for (const value of candidates) {
+      if (value === "tenant_admin" || value === "ml_operator" || value === "viewer") {
+        roles.push(value);
+      }
+    }
+    return roles;
+  } catch {
+    return [];
+  }
+}
+
+function pickActiveRole(manual: Role, token: string): Role {
+  const tokenRoles = decodeRolesFromToken(token);
+  if (tokenRoles.includes("tenant_admin")) return "tenant_admin";
+  if (tokenRoles.includes("ml_operator")) return "ml_operator";
+  if (tokenRoles.includes("viewer")) return "viewer";
+  return manual;
+}
+
+function StateBlock({
+  state,
+  title,
+  error,
+}: {
+  state: ViewState;
+  title: string;
+  error?: string | null;
+}) {
+  if (state === "loading") {
+    return (
+      <Card>
+        <Space>
+          <Spin size="small" />
+          <Text>{title} loading...</Text>
+        </Space>
+      </Card>
+    );
+  }
+
+  if (state === "error") {
+    return (
+      <Alert
+        type="error"
+        showIcon
+        message="Request failed"
+        description={
+          <div>
+            <div>
+              <Text strong>code</Text>: API_ERROR
+            </div>
+            <div>
+              <Text strong>message</Text>: {error ?? "unknown error"}
+            </div>
+            <div>
+              <Text strong>details</Text>: check request_id / trace_id on backend logs
+            </div>
+          </div>
+        }
+      />
+    );
+  }
+
+  if (state === "idle") {
+    return <Alert type="info" showIcon message="No data" description="Enter task_id and load data." />;
+  }
+
+  return null;
+}
+
+function AuthPanel({
+  token,
+  setToken,
+  role,
+  setRole,
+}: {
+  token: string;
+  setToken: (v: string) => void;
+  role: Role;
+  setRole: (v: Role) => void;
+}) {
   return (
     <Card size="small" title={<Space><LockOutlined />Auth Session</Space>}>
-      <Space.Compact style={{ width: "100%" }}>
-        <Input.Password
-          placeholder="Bearer token"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
-        />
-      </Space.Compact>
-      <Text type="secondary">토큰이 없으면 AUTH_ENABLED=false 개발 모드에서만 동작합니다.</Text>
+      <Space direction="vertical" style={{ width: "100%" }}>
+        <Space.Compact style={{ width: "100%" }}>
+          <Input.Password
+            placeholder="Bearer token"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+          />
+        </Space.Compact>
+        <Space>
+          <Text type="secondary">Role</Text>
+          <Segmented<Role>
+            options={["tenant_admin", "ml_operator", "viewer"]}
+            value={role}
+            onChange={(value) => setRole(value)}
+          />
+        </Space>
+        <Text type="secondary">When token has roles claim, token role takes precedence.</Text>
+      </Space>
     </Card>
   );
 }
@@ -107,16 +226,14 @@ function DashboardView({ token }: { token: string }) {
 
   return (
     <Space direction="vertical" style={{ width: "100%" }} size="large">
-      <Space>
-        <Button icon={<DashboardOutlined />} type="primary" loading={loading} onClick={fetchData}>
-          Refresh Dashboard
-        </Button>
-      </Space>
-      <Row gutter={16}>
-        <Col span={6}><Card><Statistic title="Active" value={data?.active_tasks ?? 0} /></Card></Col>
-        <Col span={6}><Card><Statistic title="Total(24h)" value={data?.metrics.total ?? 0} /></Card></Col>
-        <Col span={6}><Card><Statistic title="Success Rate" suffix="%" value={data?.metrics.success_rate ?? 0} /></Card></Col>
-        <Col span={6}><Card><Statistic title="Failures" value={data?.metrics.failures ?? 0} /></Card></Col>
+      <Button icon={<DashboardOutlined />} type="primary" loading={loading} onClick={fetchData}>
+        Refresh Dashboard
+      </Button>
+      <Row gutter={[16, 16]}>
+        <Col xs={24} md={12} xl={6}><Card><Statistic title="Active" value={data?.active_tasks ?? 0} /></Card></Col>
+        <Col xs={24} md={12} xl={6}><Card><Statistic title="Total(24h)" value={data?.metrics.total ?? 0} /></Card></Col>
+        <Col xs={24} md={12} xl={6}><Card><Statistic title="Success Rate" suffix="%" value={data?.metrics.success_rate ?? 0} /></Card></Col>
+        <Col xs={24} md={12} xl={6}><Card><Statistic title="Failures" value={data?.metrics.failures ?? 0} /></Card></Col>
       </Row>
       <Card title="Recent Tasks">
         <Table
@@ -125,18 +242,24 @@ function DashboardView({ token }: { token: string }) {
           columns={cols}
           dataSource={data?.recent_tasks ?? []}
           pagination={{ pageSize: 8 }}
+          scroll={{ x: 760 }}
         />
       </Card>
     </Space>
   );
 }
 
-function DetectionRunView({ token }: { token: string }) {
+function DetectionRunView({ token, role }: { token: string; role: Role }) {
   const [algorithm, setAlgorithm] = useState("IsolationForest");
   const [taskId, setTaskId] = useState("");
   const [loading, setLoading] = useState(false);
+  const executable = canExecute(role);
 
   const submit = async () => {
+    if (!executable) {
+      message.warning("Current role is read-only.");
+      return;
+    }
     setLoading(true);
     try {
       const payload = {
@@ -163,9 +286,9 @@ function DetectionRunView({ token }: { token: string }) {
   return (
     <Space direction="vertical" style={{ width: "100%" }}>
       <Card title="Detection Run (API-first)">
-        <Space.Compact style={{ width: 360 }}>
+        <Space.Compact style={{ width: "100%", maxWidth: 460 }}>
           <Input value={algorithm} onChange={(e) => setAlgorithm(e.target.value)} placeholder="Algorithm" />
-          <Button icon={<PlayCircleOutlined />} type="primary" onClick={submit} loading={loading}>
+          <Button icon={<PlayCircleOutlined />} type="primary" onClick={submit} loading={loading} disabled={!executable}>
             Run
           </Button>
         </Space.Compact>
@@ -175,10 +298,10 @@ function DetectionRunView({ token }: { token: string }) {
         </div>
       </Card>
       <Alert
-        type="info"
+        type={executable ? "info" : "warning"}
         showIcon
-        message="샘플 실행 화면입니다"
-        description="실제 파일 업로드/모델 폼은 기존 wireframe 기준으로 다음 단계에서 확장합니다."
+        message={executable ? "Sample execution view" : "Execution disabled"}
+        description={executable ? "Upload/model forms are next extension." : "viewer role can only query data."}
       />
     </Space>
   );
@@ -187,66 +310,128 @@ function DetectionRunView({ token }: { token: string }) {
 function TaskResultView({ token }: { token: string }) {
   const [taskId, setTaskId] = useState("");
   const [taskData, setTaskData] = useState<TaskData | null>(null);
-  const [causal, setCausal] = useState<Record<string, unknown> | null>(null);
-  const [recommendation, setRecommendation] = useState<Record<string, unknown> | null>(null);
+  const [state, setState] = useState<ViewState>("idle");
+  const [error, setError] = useState<string | null>(null);
 
   const fetchResult = async () => {
     if (!taskId) return;
+    setState("loading");
+    setError(null);
     try {
       const env = await getEnvelope<TaskData>(`/tasks/${taskId}`, token || undefined);
       if (env.error) throw new Error(env.error.message);
       setTaskData(env.data);
+      setState("success");
     } catch (err) {
-      message.error(String(err));
+      const msg = String(err);
+      setError(msg);
+      setState("error");
+      message.error(msg);
     }
   };
 
-  const fetchCausal = async () => {
+  return (
+    <Space direction="vertical" style={{ width: "100%" }}>
+      <Card title="Task Result">
+        <Space.Compact style={{ width: "100%", maxWidth: 520 }}>
+          <Input placeholder="task_id" value={taskId} onChange={(e) => setTaskId(e.target.value)} />
+          <Button onClick={fetchResult} icon={<FileSearchOutlined />}>Load</Button>
+        </Space.Compact>
+      </Card>
+      <StateBlock state={state} title="Task Result" error={error} />
+      {state === "success" && (
+        <Card>
+          <pre>{JSON.stringify(taskData, null, 2)}</pre>
+        </Card>
+      )}
+    </Space>
+  );
+}
+
+function CausalReportView({ token }: { token: string }) {
+  const [taskId, setTaskId] = useState("");
+  const [data, setData] = useState<Record<string, unknown> | null>(null);
+  const [state, setState] = useState<ViewState>("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchData = async () => {
     if (!taskId) return;
+    setState("loading");
+    setError(null);
     try {
       const env = await getEnvelope<{ causal_report: Record<string, unknown> }>(
         `/tasks/${taskId}/causal-report`,
         token || undefined,
       );
       if (env.error) throw new Error(env.error.message);
-      setCausal(env.data?.causal_report ?? null);
+      setData(env.data?.causal_report ?? null);
+      setState("success");
     } catch (err) {
-      message.error(String(err));
+      const msg = String(err);
+      setError(msg);
+      setState("error");
+      message.error(msg);
     }
   };
 
-  const fetchAction = async () => {
+  return (
+    <Space direction="vertical" style={{ width: "100%" }}>
+      <Card title="Causal Report">
+        <Space.Compact style={{ width: "100%", maxWidth: 560 }}>
+          <Input placeholder="task_id" value={taskId} onChange={(e) => setTaskId(e.target.value)} />
+          <Button onClick={fetchData} icon={<ShareAltOutlined />}>Load Causal</Button>
+        </Space.Compact>
+      </Card>
+      <StateBlock state={state} title="Causal Report" error={error} />
+      {state === "success" && (
+        <Card>
+          <pre>{JSON.stringify(data, null, 2)}</pre>
+        </Card>
+      )}
+    </Space>
+  );
+}
+
+function RecommendationView({ token }: { token: string }) {
+  const [taskId, setTaskId] = useState("");
+  const [data, setData] = useState<Record<string, unknown> | null>(null);
+  const [state, setState] = useState<ViewState>("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchData = async () => {
     if (!taskId) return;
+    setState("loading");
+    setError(null);
     try {
       const env = await getEnvelope<{ action_recommendation: Record<string, unknown> }>(
         `/tasks/${taskId}/action-recommendation`,
         token || undefined,
       );
       if (env.error) throw new Error(env.error.message);
-      setRecommendation(env.data?.action_recommendation ?? null);
+      setData(env.data?.action_recommendation ?? null);
+      setState("success");
     } catch (err) {
-      message.error(String(err));
+      const msg = String(err);
+      setError(msg);
+      setState("error");
+      message.error(msg);
     }
   };
 
   return (
     <Space direction="vertical" style={{ width: "100%" }}>
-      <Card title="Task Query">
-        <Space.Compact style={{ width: 480 }}>
+      <Card title="Action Recommendation">
+        <Space.Compact style={{ width: "100%", maxWidth: 560 }}>
           <Input placeholder="task_id" value={taskId} onChange={(e) => setTaskId(e.target.value)} />
-          <Button onClick={fetchResult} icon={<FileSearchOutlined />}>Result</Button>
-          <Button onClick={fetchCausal}>Causal</Button>
-          <Button onClick={fetchAction}>Action</Button>
+          <Button onClick={fetchData} icon={<ThunderboltOutlined />}>Load Action</Button>
         </Space.Compact>
       </Card>
-
-      <Tabs
-        items={[
-          { key: "result", label: "Task Result", children: <Card><pre>{JSON.stringify(taskData, null, 2)}</pre></Card> },
-          { key: "causal", label: "Causal Report", children: <Card><pre>{JSON.stringify(causal, null, 2)}</pre></Card> },
-          { key: "action", label: "Recommendation", children: <Card><pre>{JSON.stringify(recommendation, null, 2)}</pre></Card> },
-        ]}
-      />
+      <StateBlock state={state} title="Action Recommendation" error={error} />
+      {state === "success" && (
+        <Card>
+          <pre>{JSON.stringify(data, null, 2)}</pre>
+        </Card>
+      )}
     </Space>
   );
 }
@@ -281,33 +466,57 @@ function OperationsView({ token }: { token: string }) {
   return (
     <Space direction="vertical" style={{ width: "100%" }}>
       <Button icon={<SafetyCertificateOutlined />} onClick={refresh} type="primary">Refresh Operations</Button>
-      <Row gutter={16}>
-        <Col span={8}><Card><Statistic title="Plan" value={quota?.plan_tier ?? "-"} /></Card></Col>
-        <Col span={8}><Card><Statistic title="Active" value={quota?.active_count ?? 0} /></Card></Col>
-        <Col span={8}><Card><Statistic title="Remaining" value={quota?.remaining_capacity ?? 0} /></Card></Col>
-      </Row>
-      <Card title="Audit Events">
-        <Table
-          size="small"
-          rowKey={(row) => String(row.request_id ?? crypto.randomUUID())}
-          columns={auditCols}
-          dataSource={audit?.events ?? []}
-          pagination={{ pageSize: 10 }}
-        />
-      </Card>
+      <Tabs
+        items={[
+          {
+            key: "quota",
+            label: "Quota",
+            children: (
+              <Row gutter={[16, 16]}>
+                <Col xs={24} md={8}><Card><Statistic title="Plan" value={quota?.plan_tier ?? "-"} /></Card></Col>
+                <Col xs={24} md={8}><Card><Statistic title="Active" value={quota?.active_count ?? 0} /></Card></Col>
+                <Col xs={24} md={8}><Card><Statistic title="Remaining" value={quota?.remaining_capacity ?? 0} /></Card></Col>
+              </Row>
+            ),
+          },
+          {
+            key: "audit",
+            label: "Audit",
+            children: (
+              <Card title="Audit Events">
+                <Table
+                  size="small"
+                  rowKey={(row) => String(row.request_id ?? crypto.randomUUID())}
+                  columns={auditCols}
+                  dataSource={audit?.events ?? []}
+                  pagination={{ pageSize: 10 }}
+                  scroll={{ x: 760 }}
+                />
+              </Card>
+            ),
+          },
+        ]}
+      />
     </Space>
   );
 }
 
 function App() {
+  const screens = useBreakpoint();
+  const isMobile = !screens.lg;
   const [collapsed, setCollapsed] = useState(false);
   const [token, setToken] = useState("");
+  const [manualRole, setManualRole] = useState<Role>("tenant_admin");
   const [nav, setNav] = useState<NavKey>("dashboard");
+
+  const activeRole = useMemo(() => pickActiveRole(manualRole, token), [manualRole, token]);
 
   const menuItems = [
     { key: "dashboard", icon: <DashboardOutlined />, label: "Dashboard" },
     { key: "run", icon: <PlayCircleOutlined />, label: "Detection Run" },
     { key: "result", icon: <FileSearchOutlined />, label: "Task Result" },
+    { key: "causal", icon: <ShareAltOutlined />, label: "Causal Report" },
+    { key: "recommendation", icon: <ThunderboltOutlined />, label: "Recommendation" },
     { key: "operations", icon: <DeploymentUnitOutlined />, label: "Operations" },
   ];
 
@@ -321,34 +530,51 @@ function App() {
       }}
     >
       <Layout style={{ minHeight: "100vh" }}>
-        <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} width={240}>
-          <div style={{ color: "white", padding: 16, fontWeight: 700 }}>AnomaliFlow</div>
-          <Menu
-            theme="dark"
-            mode="inline"
-            selectedKeys={[nav]}
-            items={menuItems}
-            onClick={(e) => setNav(e.key as NavKey)}
-          />
-        </Sider>
+        {!isMobile && (
+          <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} width={240}>
+            <div style={{ color: "white", padding: 16, fontWeight: 700 }}>AnomaliFlow</div>
+            <Menu
+              theme="dark"
+              mode="inline"
+              selectedKeys={[nav]}
+              items={menuItems}
+              onClick={(e) => setNav(e.key as NavKey)}
+            />
+          </Sider>
+        )}
         <Layout>
           <Header style={{ background: "#fff", padding: "0 16px" }}>
-            <Title level={4} style={{ margin: "14px 0" }}>React + TypeScript + Ant Design Dashboard</Title>
+            <Space style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+              <Title level={4} style={{ margin: "14px 0" }}>Enterprise Dashboard</Title>
+              <Tag color="green">role: {activeRole}</Tag>
+            </Space>
           </Header>
-          <Content style={{ margin: 16 }}>
+          <Content style={{ margin: 16, paddingBottom: isMobile ? 64 : 0 }}>
             <Space direction="vertical" style={{ width: "100%" }} size="large">
-              <AuthPanel token={token} setToken={setToken} />
+              <AuthPanel token={token} setToken={setToken} role={manualRole} setRole={setManualRole} />
               {nav === "dashboard" && <DashboardView token={token} />}
-              {nav === "run" && <DetectionRunView token={token} />}
+              {nav === "run" && <DetectionRunView token={token} role={activeRole} />}
               {nav === "result" && <TaskResultView token={token} />}
+              {nav === "causal" && <CausalReportView token={token} />}
+              {nav === "recommendation" && <RecommendationView token={token} />}
               {nav === "operations" && <OperationsView token={token} />}
             </Space>
           </Content>
         </Layout>
       </Layout>
+
+      {isMobile && (
+        <Card className="mobile-bottom-nav" bodyStyle={{ padding: 8 }}>
+          <Menu
+            mode="horizontal"
+            selectedKeys={[nav]}
+            items={menuItems}
+            onClick={(e) => setNav(e.key as NavKey)}
+          />
+        </Card>
+      )}
     </ConfigProvider>
   );
 }
 
 export default App;
-
