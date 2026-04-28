@@ -19,6 +19,7 @@ from repositories import (
     CausalReportRepository,
     TaskResultRepository,
 )
+from explainers import generate_explanation_report, ExplainerConfig
 
 app = Celery('worker')
 app.config_from_object(celeryconfig)

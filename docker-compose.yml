@@ -40,6 +40,11 @@ services:
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=mongodb://mongo:27017/celery_results
+      - AUTH_ENABLED=false
+      - DEV_TENANT_ID=default
+      - DEV_ACTOR_ID=dev-user
+      - DEV_ROLES=tenant_admin,ml_operator,viewer
+      - DEV_PLAN_TIER=standard
     ports:
       - "8000:8000"
     networks:
@@ -50,7 +55,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     environment:
-      - VITE_API_BASE_URL=http://fastapi:8000
+      - VITE_API_BASE_URL=http://localhost:8000
     depends_on:
       - fastapi
     ports:

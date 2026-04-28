@@ -1,11 +1,12 @@
 import json
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 from celery.result import AsyncResult
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -17,7 +18,7 @@ from repositories import (
     CausalReportRepository,
     TaskResultRepository,
 )
-from worker import run_categorical_workflow, run_timeseries_workflow
+from worker import run_categorical_workflow, run_numerical_workflow, run_timeseries_workflow
 
 
 app = FastAPI()
@@ -28,6 +29,23 @@ action_recommendation_repo = ActionRecommendationRepository()
 POLICY_VERSION = "v1"
 logger = logging.getLogger("anomali.main")
 
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOW_ORIGINS", ",".join(DEFAULT_CORS_ORIGINS)).split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 def slog(event: str, **fields: Any) -> None:
     payload = {"event": event, **fields}
@@ -35,9 +53,10 @@ def slog(event: str, **fields: Any) -> None:
 
 
 class TaskRequest(BaseModel):
-    df: Dict
+    # Accept both row-array payloads (frontend CSV upload) and dict payloads (legacy callers).
+    df: Union[List[Dict[str, Any]], Dict[str, Any]]
     algorithm: str
-    params: dict
+    params: Dict[str, Any]
 
 
 class ErrorPayload(BaseModel):
@@ -120,20 +139,39 @@ def run_task(
         algorithm=request.algorithm,
     )
 
-    if request.algorithm in ["DBSCAN", "KMeans"]:
-        task = run_timeseries_workflow.delay(
-            request.df,
-            request.algorithm,
-            request.params,
-            tenant_context,
-        )
+    data_type = str(request.params.get("data_type", "")).strip().lower()
+    algorithm = request.algorithm
+    timeseries_algorithms = {"IsolationForest", "GMM"}
+    categorical_algorithms = {"LOF", "DBSCAN"}
+    numerical_algorithms = {"IsolationForest", "GMM", "DBSCAN", "LOF", "KMeans"}
+
+    if data_type == "time_series":
+        if algorithm not in timeseries_algorithms:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported algorithm '{algorithm}' for data_type 'time_series'",
+            )
+        task = run_timeseries_workflow.delay(request.df, algorithm, request.params, tenant_context)
+    elif data_type == "categorical":
+        if algorithm not in categorical_algorithms:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported algorithm '{algorithm}' for data_type 'categorical'",
+            )
+        task = run_categorical_workflow.delay(request.df, algorithm, request.params, tenant_context)
+    elif data_type == "numerical":
+        if algorithm not in numerical_algorithms:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported algorithm '{algorithm}' for data_type 'numerical'",
+            )
+        task = run_numerical_workflow.delay(request.df, algorithm, request.params, tenant_context)
     else:
-        task = run_categorical_workflow.delay(
-            request.df,
-            request.algorithm,
-            request.params,
-            tenant_context,
-        )
+        # Backward-compatible fallback when data_type is absent.
+        if algorithm in categorical_algorithms:
+            task = run_categorical_workflow.delay(request.df, algorithm, request.params, tenant_context)
+        else:
+            task = run_numerical_workflow.delay(request.df, algorithm, request.params, tenant_context)
 
     task_result_repo.create_submitted_task(
         tenant_id=context.tenant_id,
@@ -408,3 +446,111 @@ def get_action_recommendation(
         context,
         {"task_id": task_id, "action_recommendation": recommendation},
     )
+
+
+@app.get("/tasks/{task_id}/explanations", response_model=dict)
+def get_task_explanations(
+    task_id: str,
+    context: RequestContext = Depends(require_request_context),
+):
+    """
+    Retrieve SHAP/LIME explanations for a task's anomaly detection results.
+
+    Returns feature importance, SHAP values, and instance-level explanations.
+    """
+    require_roles(context, {"tenant_admin", "ml_operator", "viewer"})
+    task_doc = task_result_repo.get_task_for_tenant(tenant_id=context.tenant_id, task_id=task_id)
+    if not task_doc:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # Extract SHAP analysis from task result if available
+    result_payload = task_doc.get("result_payload", {})
+    shap_analysis = result_payload.get("shap_analysis")
+
+    if not shap_analysis:
+        raise HTTPException(
+            status_code=404,
+            detail="SHAP explanations not available for this task. Try requesting a new analysis.",
+        )
+
+    slog(
+        "task_explanations_requested",
+        tenant_id=context.tenant_id,
+        actor_id=context.actor_id,
+        request_id=context.request_id,
+        task_id=task_id,
+    )
+    audit_repo.log_event(
+        tenant_id=context.tenant_id,
+        actor_id=context.actor_id,
+        action="explanations.read",
+        resource_type="explanations",
+        resource_id=task_id,
+        result="success",
+        request_id=context.request_id,
+        details={"task_id": task_id, "analysis_type": "shap"},
+    )
+
+    # Extract key fields for response
+    explanation_response = {
+        "task_id": task_id,
+        "algorithm": shap_analysis.get("algorithm"),
+        "method": shap_analysis.get("method"),
+        "feature_importance": shap_analysis.get("feature_importance", {}),
+        "outlier_explanations": shap_analysis.get("outlier_explanations", {}),
+        "n_samples_analyzed": shap_analysis.get("n_samples_analyzed"),
+        "n_outliers_analyzed": shap_analysis.get("n_outliers_analyzed"),
+    }
+
+    return build_success_response(context, explanation_response)
+
+
+@app.post("/tasks/{task_id}/request-explanation", response_model=dict)
+def request_task_explanation(
+    task_id: str,
+    request: Optional[Dict[str, Any]] = None,
+    context: RequestContext = Depends(require_request_context),
+):
+    """
+    Request SHAP/LIME explanation for an existing task result.
+
+    This endpoint triggers a background job to calculate explanations if not already done.
+    """
+    require_roles(context, {"tenant_admin", "ml_operator"})
+    task_doc = task_result_repo.get_task_for_tenant(tenant_id=context.tenant_id, task_id=task_id)
+    if not task_doc:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task_doc.get("status") != "SUCCESS":
+        raise HTTPException(
+            status_code=400,
+            detail="Task must be in SUCCESS status to request explanations",
+        )
+
+    slog(
+        "explanation_request_submitted",
+        tenant_id=context.tenant_id,
+        actor_id=context.actor_id,
+        request_id=context.request_id,
+        task_id=task_id,
+    )
+    audit_repo.log_event(
+        tenant_id=context.tenant_id,
+        actor_id=context.actor_id,
+        action="explanations.request",
+        resource_type="explanations",
+        resource_id=task_id,
+        result="pending",
+        request_id=context.request_id,
+        details={"task_id": task_id},
+    )
+
+    return build_success_response(
+        context,
+        {
+            "task_id": task_id,
+            "message": "Explanation request submitted. Use GET /tasks/{task_id}/explanations to retrieve results.",
+            "status": "pending",
+        },
+    )
+

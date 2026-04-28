@@ -41,3 +41,44 @@ export async function getEnvelope<T>(
   return res.data;
 }
 
+export interface ShapExplanation {
+  task_id: string;
+  algorithm: string;
+  method: string;
+  feature_importance: Record<string, number>;
+  outlier_explanations: Record<
+    string,
+    Array<{
+      feature: string;
+      shap_value: number;
+      abs_shap_value: number;
+    }>
+  >;
+  n_samples_analyzed: number;
+  n_outliers_analyzed: number;
+}
+
+export async function getTaskExplanations(
+  taskId: string,
+  token?: string,
+): Promise<ApiEnvelope<ShapExplanation>> {
+  return getEnvelope<ShapExplanation>(`/tasks/${taskId}/explanations`, token);
+}
+
+export async function requestTaskExplanation(
+  taskId: string,
+  token?: string,
+): Promise<ApiEnvelope<Record<string, unknown>>> {
+  const res = await api.post<ApiEnvelope<Record<string, unknown>>>(
+    `/tasks/${taskId}/request-explanation`,
+    {},
+    {
+      headers: {
+        ...authHeader(token),
+        "X-Request-Id": crypto.randomUUID(),
+      },
+    },
+  );
+  return res.data;
+}
+

@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from "react";
+﻿import { useMemo, useState, type ReactNode } from "react";
 import {
   Alert,
   Button,
@@ -7,11 +7,15 @@ import {
   Collapse,
   ConfigProvider,
   Descriptions,
+  Empty,
   Grid,
   Input,
   InputNumber,
   Layout,
+  List,
   Menu,
+  Modal,
+  Progress,
   Row,
   Segmented,
   Select,
@@ -68,6 +72,8 @@ type TaskData = {
   result?: Record<string, unknown> | string;
 };
 
+type TaskResultChartType = "bar" | "line" | "table";
+
 type AuditData = {
   count: number;
   events: Array<Record<string, unknown>>;
@@ -78,6 +84,13 @@ type QuotaData = {
   active_count: number;
   max_concurrency: number;
   remaining_capacity: number;
+};
+
+type TaskListItem = {
+  task_id: string;
+  status?: string;
+  algorithm?: string;
+  updated_at?: string;
 };
 
 type ParamSpec = {
@@ -110,6 +123,18 @@ const MODEL_PARAM_SPECS: Record<string, ParamSpec[]> = {
     { key: "contamination", label: "Contamination", type: "number", defaultValue: 0.1, min: 0.001, max: 0.5, step: 0.001 },
     { key: "novelty", label: "novelty", type: "boolean", defaultValue: false },
   ],
+  GMM: [
+    { key: "n_init", label: "n_init", type: "number", defaultValue: 1, min: 1, max: 20, step: 1 },
+    { key: "n_components", label: "n_components", type: "number", defaultValue: 2, min: 1, max: 20, step: 1 },
+    { key: "random_state", label: "random_state", type: "number", defaultValue: 42, min: 0, max: 100000, step: 1 },
+    { key: "init_params", label: "init_params", type: "text", defaultValue: "kmeans" },
+  ],
+};
+
+const ALGORITHMS_BY_DATA_TYPE: Record<DataType, string[]> = {
+  time_series: ["IsolationForest", "GMM"],
+  categorical: ["LOF", "DBSCAN"],
+  numerical: ["IsolationForest", "GMM", "DBSCAN", "LOF", "KMeans"],
 };
 
 function canExecute(role: Role) {
@@ -246,6 +271,427 @@ function JsonPanel({ title, value }: { title: string; value: unknown }) {
   );
 }
 
+function parseNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return null;
+}
+
+function parseFeatureContributions(data: Record<string, unknown>): Array<{ name: string; score: number }> {
+  const candidates = data.root_cause_candidates;
+  if (Array.isArray(candidates)) {
+    const rows = candidates
+      .map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const row = item as Record<string, unknown>;
+        const name = String(row.feature ?? row.name ?? row.variable ?? "unknown");
+        const score = parseNumber(row.score ?? row.importance ?? row.weight) ?? 0;
+        return { name, score };
+      })
+      .filter((item): item is { name: string; score: number } => Boolean(item));
+    if (rows.length > 0) {
+      return rows
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 8);
+    }
+  }
+
+  const objectSources = [
+    data.feature_importance,
+    data.root_cause_scores,
+    data.shap_values,
+  ];
+
+  for (const source of objectSources) {
+    if (!source || typeof source !== "object" || Array.isArray(source)) continue;
+    const rows = Object.entries(source as Record<string, unknown>)
+      .map(([name, rawScore]) => {
+        const score = parseNumber(rawScore);
+        if (score === null) return null;
+        return { name, score };
+      })
+      .filter((item): item is { name: string; score: number } => Boolean(item));
+    if (rows.length > 0) {
+      return rows
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 8);
+    }
+  }
+
+  const confounders = Array.isArray(data.confounders) ? data.confounders : [];
+  if (confounders.length > 0) {
+    const weight = 1 / confounders.length;
+    return confounders.slice(0, 8).map((item) => ({ name: String(item), score: weight }));
+  }
+
+  return [];
+}
+
+function EffectIntervalChart({
+  effectSize,
+  ciLow,
+  ciHigh,
+}: {
+  effectSize: number;
+  ciLow: number;
+  ciHigh: number;
+}) {
+  const chartMin = Math.min(0, ciLow, effectSize) - 0.1;
+  const chartMax = Math.max(1, ciHigh, effectSize) + 0.1;
+  const range = chartMax - chartMin || 1;
+
+  const lowPct = ((ciLow - chartMin) / range) * 100;
+  const highPct = ((ciHigh - chartMin) / range) * 100;
+  const effectPct = ((effectSize - chartMin) / range) * 100;
+
+  return (
+    <Card size="small" title="Causal Effect + Confidence Interval">
+      <div style={{ position: "relative", height: 54, padding: "18px 0" }}>
+        <div style={{ position: "absolute", left: 0, right: 0, top: 25, height: 4, background: "#f0f0f0", borderRadius: 999 }} />
+        <div
+          style={{
+            position: "absolute",
+            left: `${lowPct}%`,
+            width: `${Math.max(2, highPct - lowPct)}%`,
+            top: 23,
+            height: 8,
+            background: "#91caff",
+            borderRadius: 999,
+          }}
+        />
+        <div
+          style={{
+            position: "absolute",
+            left: `calc(${effectPct}% - 1px)`,
+            top: 16,
+            width: 2,
+            height: 24,
+            background: "#1677ff",
+          }}
+        />
+      </div>
+      <Space size="large" wrap>
+        <Text>effect_size: {effectSize.toFixed(4)}</Text>
+        <Text>ci_low: {ciLow.toFixed(4)}</Text>
+        <Text>ci_high: {ciHigh.toFixed(4)}</Text>
+      </Space>
+    </Card>
+  );
+}
+
+function RootCauseContributionChart({ rows }: { rows: Array<{ name: string; score: number }> }) {
+  if (rows.length === 0) {
+    return (
+      <Card size="small" title="Root Cause Candidates">
+        <Empty description="No root cause candidate data" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+      </Card>
+    );
+  }
+
+  const maxScore = Math.max(...rows.map((row) => row.score), 1);
+
+  return (
+    <Card size="small" title="Root Cause Candidates (Contribution)">
+      <Space direction="vertical" style={{ width: "100%" }}>
+        {rows.map((row) => {
+          const percent = Math.max(0, Math.min(100, (row.score / maxScore) * 100));
+          return (
+            <div key={row.name}>
+              <Space style={{ width: "100%", justifyContent: "space-between" }}>
+                <Text>{row.name}</Text>
+                <Text type="secondary">{row.score.toFixed(4)}</Text>
+              </Space>
+              <Progress percent={percent} showInfo={false} strokeColor="#52c41a" />
+            </div>
+          );
+        })}
+      </Space>
+    </Card>
+  );
+}
+
+function extractNumericMetrics(value: unknown, prefix = "", depth = 0): Array<{ key: string; value: number }> {
+  if (depth > 2) return [];
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return [{ key: prefix || "value", value }];
+  }
+
+  if (Array.isArray(value)) {
+    const numericValues = value
+      .map((item) => (typeof item === "number" && Number.isFinite(item) ? item : null))
+      .filter((item): item is number => item !== null);
+    if (numericValues.length > 0) {
+      return [{ key: prefix || "array_mean", value: numericValues.reduce((a, b) => a + b, 0) / numericValues.length }];
+    }
+    return [];
+  }
+
+  if (!value || typeof value !== "object") return [];
+
+  const rows: Array<{ key: string; value: number }> = [];
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const nextPrefix = prefix ? `${prefix}.${k}` : k;
+    rows.push(...extractNumericMetrics(v, nextPrefix, depth + 1));
+  }
+  return rows;
+}
+
+function TaskResultCharts({
+  result,
+  chartType,
+  onChangeChartType,
+}: {
+  result: TaskData["result"];
+  chartType: TaskResultChartType;
+  onChangeChartType: (next: TaskResultChartType) => void;
+}) {
+  if (!result || typeof result === "string") {
+    return (
+      <Card title="Task Result Charts" size="small">
+        <Empty description="Numeric chart data not available" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+      </Card>
+    );
+  }
+
+  const rawRows = extractNumericMetrics(result)
+    .filter((row) => Number.isFinite(row.value))
+    .slice(0, 20);
+
+  if (rawRows.length === 0) {
+    return (
+      <Card title="Task Result Charts" size="small">
+        <Empty description="No numeric metrics found in result JSON" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+      </Card>
+    );
+  }
+
+  const rows: Array<{ key: string; value: number; absValue: number }> = rawRows.map((row) => ({
+    ...row,
+    absValue: Math.abs(row.value),
+  }));
+  const maxAbs = Math.max(...rows.map((row) => row.absValue), 1);
+
+  return (
+    <Card
+      title="Task Result Charts"
+      size="small"
+      extra={
+        <Segmented<TaskResultChartType>
+          value={chartType}
+          onChange={onChangeChartType}
+          options={[
+            { label: "Bar", value: "bar" },
+            { label: "Line", value: "line" },
+            { label: "Table", value: "table" },
+          ]}
+        />
+      }
+    >
+      {chartType === "bar" && (
+        <Space direction="vertical" style={{ width: "100%" }}>
+          {rows.map((row) => (
+            <div key={row.key}>
+              <Space style={{ width: "100%", justifyContent: "space-between" }}>
+                <Text ellipsis style={{ maxWidth: 420 }}>{row.key}</Text>
+                <Text type="secondary">{row.value.toFixed(4)}</Text>
+              </Space>
+              <Progress
+                percent={Math.max(0, Math.min(100, (row.absValue / maxAbs) * 100))}
+                showInfo={false}
+                strokeColor={row.value >= 0 ? "#1677ff" : "#ff7875"}
+              />
+            </div>
+          ))}
+        </Space>
+      )}
+
+      {chartType === "line" && (
+        <div style={{ width: "100%", overflowX: "auto" }}>
+          <svg width={760} height={240} role="img" aria-label="task-result-line-chart">
+            <line x1={40} y1={200} x2={730} y2={200} stroke="#d9d9d9" />
+            <line x1={40} y1={24} x2={40} y2={200} stroke="#d9d9d9" />
+            <polyline
+              fill="none"
+              stroke="#1677ff"
+              strokeWidth={2}
+              points={rows
+                .map((row, index) => {
+                  const x = 40 + (index * 690) / Math.max(1, rows.length - 1);
+                  const y = 200 - (row.absValue / maxAbs) * 160;
+                  return `${x},${y}`;
+                })
+                .join(" ")}
+            />
+            {rows.map((row, index) => {
+              const x = 40 + (index * 690) / Math.max(1, rows.length - 1);
+              const y = 200 - (row.absValue / maxAbs) * 160;
+              return <circle key={row.key} cx={x} cy={y} r={3} fill={row.value >= 0 ? "#1677ff" : "#ff7875"} />;
+            })}
+          </svg>
+          <Text type="secondary">Line chart는 각 수치 지표의 절대값 크기 추이를 보여줍니다.</Text>
+        </div>
+      )}
+
+      {chartType === "table" && (
+        <Table<{ key: string; value: number; absValue: number }>
+          size="small"
+          pagination={{ pageSize: 8 }}
+          rowKey={(row) => row.key}
+          dataSource={rows}
+          columns={[
+            {
+              title: "metric",
+              dataIndex: "key",
+              key: "key",
+              render: (value: string) => <Text ellipsis style={{ maxWidth: 460 }}>{value}</Text>,
+            },
+            {
+              title: "value",
+              dataIndex: "value",
+              key: "value",
+              render: (value: number) => value.toFixed(6),
+            },
+            {
+              title: "magnitude",
+              dataIndex: "absValue",
+              key: "absValue",
+              render: (value: number, row: { value: number }) => (
+                <Progress
+                  percent={Math.max(0, Math.min(100, (value / maxAbs) * 100))}
+                  showInfo={false}
+                  strokeColor={row.value >= 0 ? "#1677ff" : "#ff7875"}
+                />
+              ),
+            },
+          ]}
+          scroll={{ x: 760 }}
+        />
+      )}
+    </Card>
+  );
+}
+
+function TaskIdPickerInput({
+  value,
+  onChange,
+  onConfirm,
+  token,
+  placeholder,
+  testId,
+  loadTestId,
+  loadLabel,
+  loadIcon,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onConfirm: () => void;
+  token: string;
+  placeholder: string;
+  testId: string;
+  loadTestId: string;
+  loadLabel: string;
+  loadIcon?: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [taskItems, setTaskItems] = useState<TaskListItem[]>([]);
+
+  const loadTaskList = async () => {
+    setLoading(true);
+    try {
+      const env = await getEnvelope<DashboardSummary>("/dashboard/summary", token || undefined);
+      if (env.error) throw new Error(env.error.message);
+      const recentTasks = (env.data?.recent_tasks ?? []).reduce<TaskListItem[]>((acc, row) => {
+        const task_id = String(row.task_id ?? "").trim();
+        if (!task_id) return acc;
+        acc.push({
+          task_id,
+          status: row.status ? String(row.status) : undefined,
+          algorithm: row.algorithm ? String(row.algorithm) : undefined,
+          updated_at: row.updated_at ? String(row.updated_at) : undefined,
+        });
+        return acc;
+      }, []);
+      setTaskItems(recentTasks);
+    } catch (err) {
+      message.error(`Failed to load task list: ${String(err)}`);
+      setTaskItems([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openPicker = async () => {
+    setOpen(true);
+    await loadTaskList();
+  };
+
+  return (
+    <>
+      <Space.Compact style={{ width: "100%", maxWidth: 560 }}>
+        <Input
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onClick={openPicker}
+          data-testid={testId}
+        />
+        <Button onClick={openPicker}>Select</Button>
+        <Button onClick={onConfirm} icon={loadIcon ?? <FileSearchOutlined />} data-testid={loadTestId}>{loadLabel}</Button>
+      </Space.Compact>
+
+      <Modal
+        title="Select task_id"
+        open={open}
+        onCancel={() => setOpen(false)}
+        footer={null}
+        destroyOnHidden
+      >
+        <Button size="small" onClick={loadTaskList} loading={loading} style={{ marginBottom: 12 }}>
+          Refresh List
+        </Button>
+        <List
+          bordered
+          loading={loading}
+          locale={{ emptyText: "No task_id found" }}
+          dataSource={taskItems}
+          renderItem={(item) => (
+            <List.Item
+              actions={[
+                <Button
+                  key="use"
+                  type="link"
+                  onClick={() => {
+                    onChange(item.task_id);
+                    setOpen(false);
+                  }}
+                >
+                  Use
+                </Button>,
+              ]}
+            >
+              <List.Item.Meta
+                title={item.task_id}
+                description={
+                  <Space split={<span>|</span>} wrap>
+                    <Text type="secondary">status: {item.status ?? "-"}</Text>
+                    <Text type="secondary">algo: {item.algorithm ?? "-"}</Text>
+                    <Text type="secondary">updated: {item.updated_at ?? "-"}</Text>
+                  </Space>
+                }
+              />
+            </List.Item>
+          )}
+        />
+      </Modal>
+    </>
+  );
+}
+
 function SummaryCard({
   title,
   rows,
@@ -357,7 +803,7 @@ function DashboardView({ token }: { token: string }) {
 
 function DetectionRunView({ token, role }: { token: string; role: Role }) {
   const [dataType, setDataType] = useState<DataType>("time_series");
-  const [algorithm, setAlgorithm] = useState("IsolationForest");
+  const [algorithm, setAlgorithm] = useState(ALGORITHMS_BY_DATA_TYPE.time_series[0]);
   const [rows, setRows] = useState<Array<Record<string, unknown>>>([]);
   const [loading, setLoading] = useState(false);
   const [taskId, setTaskId] = useState("");
@@ -389,7 +835,11 @@ function DetectionRunView({ token, role }: { token: string; role: Role }) {
 
   const onDataTypeChange = (value: DataType) => {
     setDataType(value);
-    setParams((prev) => ({ ...prev, data_type: value }));
+    const nextAlgorithm = ALGORITHMS_BY_DATA_TYPE[value][0];
+    setAlgorithm(nextAlgorithm);
+    const defaults: Record<string, unknown> = { data_type: value };
+    for (const spec of MODEL_PARAM_SPECS[nextAlgorithm] ?? []) defaults[spec.key] = spec.defaultValue;
+    setParams(defaults);
   };
 
   const onUpload = async (file: File) => {
@@ -464,7 +914,7 @@ function DetectionRunView({ token, role }: { token: string; role: Role }) {
                 style={{ width: "100%" }}
                 value={algorithm}
                 onChange={onAlgorithmChange}
-                options={Object.keys(MODEL_PARAM_SPECS).map((v) => ({ label: v, value: v }))}
+                options={ALGORITHMS_BY_DATA_TYPE[dataType].map((v) => ({ label: v, value: v }))}
               />
             </Col>
           </Row>
@@ -545,6 +995,7 @@ function TaskResultView({ token }: { token: string }) {
   const [taskData, setTaskData] = useState<TaskData | null>(null);
   const [state, setState] = useState<ViewState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [chartType, setChartType] = useState<TaskResultChartType>("bar");
 
   const fetchResult = async () => {
     if (!taskId) return;
@@ -566,10 +1017,16 @@ function TaskResultView({ token }: { token: string }) {
   return (
     <Space direction="vertical" style={{ width: "100%" }}>
       <Card title="Task Result" data-testid="task-result-card">
-        <Space.Compact style={{ width: "100%", maxWidth: 520 }}>
-          <Input placeholder="task_id" value={taskId} onChange={(e) => setTaskId(e.target.value)} data-testid="task-id-input" />
-          <Button onClick={fetchResult} icon={<FileSearchOutlined />} data-testid="task-load">Load</Button>
-        </Space.Compact>
+        <TaskIdPickerInput
+          value={taskId}
+          onChange={setTaskId}
+          onConfirm={fetchResult}
+          token={token}
+          placeholder="task_id"
+          testId="task-id-input"
+          loadTestId="task-load"
+          loadLabel="Load"
+        />
       </Card>
       <StateBlock state={state} title="Task Result" error={error} />
       {state === "success" && taskData && (
@@ -594,6 +1051,11 @@ function TaskResultView({ token }: { token: string }) {
               </Card>
             </Col>
           </Row>
+          <TaskResultCharts
+            result={taskData.result}
+            chartType={chartType}
+            onChangeChartType={setChartType}
+          />
           <JsonPanel title="Raw Task JSON" value={taskData} />
         </Space>
       )}
@@ -630,29 +1092,88 @@ function CausalReportView({ token }: { token: string }) {
   return (
     <Space direction="vertical" style={{ width: "100%" }}>
       <Card title="Causal Report" data-testid="causal-card">
-        <Space.Compact style={{ width: "100%", maxWidth: 560 }}>
-          <Input
-            placeholder="task_id"
-            value={taskId}
-            onChange={(e) => setTaskId(e.target.value)}
-            data-testid="causal-task-id-input"
-          />
-          <Button onClick={fetchData} icon={<ShareAltOutlined />} data-testid="causal-load">Load Causal</Button>
-        </Space.Compact>
+        <TaskIdPickerInput
+          value={taskId}
+          onChange={setTaskId}
+          onConfirm={fetchData}
+          token={token}
+          placeholder="task_id"
+          testId="causal-task-id-input"
+          loadTestId="causal-load"
+          loadLabel="Load Causal"
+          loadIcon={<ShareAltOutlined />}
+        />
       </Card>
       <StateBlock state={state} title="Causal Report" error={error} />
       {state === "success" && data && (
         <Space direction="vertical" style={{ width: "100%" }}>
-          <SummaryCard
-            title="Causal Summary"
-            rows={[
-              { label: "analysis_id", value: data.analysis_id },
-              { label: "treatment", value: data.treatment },
-              { label: "outcome", value: data.outcome },
-              { label: "effect_size", value: data.effect_size },
-              { label: "refutation_result", value: data.refutation_result },
-            ]}
-          />
+          <Row gutter={[16, 16]}>
+            <Col xs={24} xl={12}>
+              <SummaryCard
+                title="Causal Summary"
+                rows={[
+                  { label: "analysis_id", value: data.analysis_id },
+                  { label: "treatment", value: data.treatment },
+                  { label: "outcome", value: data.outcome },
+                  { label: "effect_size", value: data.effect_size },
+                  { label: "refutation_result", value: data.refutation_result },
+                ]}
+              />
+            </Col>
+            <Col xs={24} xl={12}>
+              <Card title="Causal Graph View" size="small">
+                <Space direction="vertical" style={{ width: "100%" }}>
+                  <Tag color="blue">Treatment: {String(data.treatment ?? "-")}</Tag>
+                  <Text style={{ textAlign: "center" }}>↓</Text>
+                  <Tag color="green">Outcome: {String(data.outcome ?? "-")}</Tag>
+                  <Text type="secondary">Confounders</Text>
+                  <Space wrap>
+                    {(Array.isArray(data.confounders) ? data.confounders : []).map((confounder) => (
+                      <Tag key={String(confounder)}>{String(confounder)}</Tag>
+                    ))}
+                  </Space>
+                </Space>
+              </Card>
+            </Col>
+          </Row>
+
+          {(() => {
+            const effect = parseNumber(data.effect_size);
+            const ci = data.confidence_interval;
+            const ciLow = ci && typeof ci === "object" ? parseNumber((ci as Record<string, unknown>).low) : null;
+            const ciHigh = ci && typeof ci === "object" ? parseNumber((ci as Record<string, unknown>).high) : null;
+            if (effect === null || ciLow === null || ciHigh === null) {
+              return (
+                <Card size="small" title="Causal Effect + Confidence Interval">
+                  <Empty description="effect_size/confidence_interval not available" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                </Card>
+              );
+            }
+            return <EffectIntervalChart effectSize={effect} ciLow={ciLow} ciHigh={ciHigh} />;
+          })()}
+
+          <RootCauseContributionChart rows={parseFeatureContributions(data)} />
+
+          <Card title="Counterfactual / What-if" size="small">
+            {Array.isArray(data.counterfactual_scenarios) && data.counterfactual_scenarios.length > 0 ? (
+              <Table
+                size="small"
+                pagination={false}
+                rowKey={(_, index) => String(index)}
+                dataSource={data.counterfactual_scenarios as Record<string, unknown>[]}
+                columns={[
+                  { title: "scenario", dataIndex: "scenario", key: "scenario" },
+                  { title: "expected_uplift", dataIndex: "expected_uplift", key: "expected_uplift" },
+                  { title: "risk", dataIndex: "risk", key: "risk" },
+                  { title: "note", dataIndex: "note", key: "note" },
+                ]}
+                scroll={{ x: 640 }}
+              />
+            ) : (
+              <Empty description="No counterfactual scenarios" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            )}
+          </Card>
+
           <JsonPanel title="Raw Causal JSON" value={data} />
         </Space>
       )}
@@ -689,15 +1210,17 @@ function RecommendationView({ token }: { token: string }) {
   return (
     <Space direction="vertical" style={{ width: "100%" }}>
       <Card title="Action Recommendation" data-testid="action-card">
-        <Space.Compact style={{ width: "100%", maxWidth: 560 }}>
-          <Input
-            placeholder="task_id"
-            value={taskId}
-            onChange={(e) => setTaskId(e.target.value)}
-            data-testid="action-task-id-input"
-          />
-          <Button onClick={fetchData} icon={<ThunderboltOutlined />} data-testid="action-load">Load Action</Button>
-        </Space.Compact>
+        <TaskIdPickerInput
+          value={taskId}
+          onChange={setTaskId}
+          onConfirm={fetchData}
+          token={token}
+          placeholder="task_id"
+          testId="action-task-id-input"
+          loadTestId="action-load"
+          loadLabel="Load Action"
+          loadIcon={<ThunderboltOutlined />}
+        />
       </Card>
       <StateBlock state={state} title="Action Recommendation" error={error} />
       {state === "success" && data && (

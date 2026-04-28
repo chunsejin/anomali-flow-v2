@@ -145,20 +145,43 @@ test("task flow cards load for result/causal/recommendation", async ({ page }) =
   await expect(page.getByText("task_id: demo-task")).toBeVisible();
 
   await page.getByRole("menuitem", { name: "Task Result" }).click();
-  await page.getByTestId("task-id-input").fill("demo-task");
+  await page.getByRole("button", { name: "Select" }).first().click();
+  await page.getByRole("dialog", { name: "Select task_id" }).getByRole("button", { name: "Use" }).first().click();
   await page.getByTestId("task-load").click();
   await expect(page.getByText("Task Summary")).toBeVisible();
   await expect(page.getByText("SUCCESS").first()).toBeVisible();
 
   await page.getByRole("menuitem", { name: "Causal Report" }).click();
-  await page.getByTestId("causal-task-id-input").fill("demo-task");
+  await page.getByRole("button", { name: "Select" }).first().click();
+  await page.getByRole("dialog", { name: "Select task_id" }).getByRole("button", { name: "Use" }).first().click();
   await page.getByTestId("causal-load").click();
   await expect(page.getByText("Causal Summary")).toBeVisible();
-  await expect(page.getByText("discount")).toBeVisible();
+  await expect(page.getByText("Treatment: discount")).toBeVisible();
 
   await page.getByRole("menuitem", { name: "Recommendation" }).click();
   await page.getByTestId("action-task-id-input").fill("demo-task");
   await page.getByTestId("action-load").click();
   await expect(page.getByText("Recommendation Summary")).toBeVisible();
   await expect(page.getByText("increase_budget")).toBeVisible();
+});
+
+test("task_id picker modal selects task for result and causal views", async ({ page }) => {
+  await page.getByRole("menuitem", { name: "Task Result" }).click();
+
+  await page.getByRole("button", { name: "Select" }).first().click();
+  await expect(page.getByRole("dialog", { name: "Select task_id" })).toBeVisible();
+  await page.getByRole("dialog", { name: "Select task_id" }).getByRole("button", { name: "Use" }).first().click();
+
+  await expect(page.getByTestId("task-id-input")).toHaveValue("demo-task");
+  await page.getByTestId("task-load").click();
+  await expect(page.getByText("Task Summary")).toBeVisible();
+
+  await page.getByRole("menuitem", { name: "Causal Report" }).click();
+  await page.getByRole("button", { name: "Select" }).first().click();
+  await expect(page.getByRole("dialog", { name: "Select task_id" })).toBeVisible();
+  await page.getByRole("dialog", { name: "Select task_id" }).getByRole("button", { name: "Use" }).first().click();
+
+  await expect(page.getByTestId("causal-task-id-input")).toHaveValue("demo-task");
+  await page.getByTestId("causal-load").click();
+  await expect(page.getByText("Causal Summary")).toBeVisible();
 });

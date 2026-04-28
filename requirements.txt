@@ -11,3 +11,6 @@ scikit-learn
 tensorly
 bokeh==2.4.3
 prefect
+shap
+lime
+matplotlib
