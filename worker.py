@@ -21,6 +21,46 @@ from repositories import (
 )
 from explainers import generate_explanation_report, ExplainerConfig
 
+
+def _add_shap_analysis_to_result(task_id, tenant_context, model, X, algorithm, outlier_indices, result):
+    """
+    Safely add SHAP analysis to task result without blocking on failure.
+    
+    Args:
+        task_id: Task identifier
+        tenant_context: Tenant context dict
+        model: Trained model
+        X: Feature matrix (DataFrame)
+        algorithm: Algorithm name
+        outlier_indices: List of outlier indices
+        result: Result dict to update (modified in place)
+    """
+    try:
+        if model is None or X is None or len(outlier_indices) == 0:
+            return
+        
+        explainer_config = ExplainerConfig(method="shap", sample_size=min(100, len(X)))
+        shap_analysis = generate_explanation_report(
+            model, X, algorithm, outlier_indices, methods=["shap"], config=explainer_config
+        )
+        result["shap_analysis"] = shap_analysis
+        slog(
+            "shap_analysis_added",
+            task_id=task_id,
+            tenant_id=tenant_context["tenant_id"],
+            algorithm=algorithm,
+            n_outliers=len(outlier_indices),
+        )
+    except Exception as e:
+        slog(
+            "shap_analysis_error",
+            task_id=task_id,
+            tenant_id=tenant_context["tenant_id"],
+            algorithm=algorithm,
+            error=str(e),
+        )
+        # Do not fail the task; SHAP is optional
+
 app = Celery('worker')
 app.config_from_object(celeryconfig)
 
