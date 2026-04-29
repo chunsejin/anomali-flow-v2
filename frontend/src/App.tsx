@@ -25,6 +25,7 @@ import {
   Switch,
   Table,
   Tag,
+  Tooltip,
   Typography,
   Upload,
   message,
@@ -34,22 +35,33 @@ import {
   DashboardOutlined,
   DeploymentUnitOutlined,
   FileSearchOutlined,
+  InfoCircleOutlined,
   InboxOutlined,
   LockOutlined,
   PlayCircleOutlined,
   SafetyCertificateOutlined,
+  SettingOutlined,
   ShareAltOutlined,
   ThunderboltOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import { getEnvelope, api, authHeader } from "./api";
+import {
+  TaskResultOutlierChart,
+  CausalEffectChart,
+  CausalDagChart,
+  JsonMetricsTable,
+  JsonHierarchyView,
+  type TaskResultData,
+  type CausalReportData,
+} from "./components/JsonVisualizer";
 
 const { Header, Content, Sider } = Layout;
 const { Title, Text } = Typography;
 const { useBreakpoint } = Grid;
 const { Dragger } = Upload;
 
-type NavKey = "dashboard" | "run" | "result" | "causal" | "recommendation" | "operations";
+type NavKey = "dashboard" | "run" | "result" | "causal" | "recommendation" | "operations" | "settings";
 type Role = "tenant_admin" | "ml_operator" | "viewer";
 type ViewState = "idle" | "loading" | "error" | "success";
 type DataType = "time_series" | "categorical" | "numerical";
@@ -174,6 +186,17 @@ function parseCsvToRecords(content: string): Array<Record<string, unknown>> {
     });
     return record;
   });
+}
+
+function infoTitle(title: string, description: string): ReactNode {
+  return (
+    <Space size={6} align="center">
+      <span>{title}</span>
+      <Tooltip title={description}>
+        <InfoCircleOutlined style={{ color: "#8c8c8c" }} />
+      </Tooltip>
+    </Space>
+  );
 }
 
 function decodeRolesFromToken(token: string): Role[] {
@@ -348,7 +371,7 @@ function EffectIntervalChart({
   const effectPct = ((effectSize - chartMin) / range) * 100;
 
   return (
-    <Card size="small" title="Causal Effect + Confidence Interval">
+    <Card size="small" title={infoTitle("Causal Effect + Confidence Interval", "처치 효과(effect_size)와 신뢰구간(CI)을 함께 시각화합니다.")}>
       <div style={{ position: "relative", height: 54, padding: "18px 0" }}>
         <div style={{ position: "absolute", left: 0, right: 0, top: 25, height: 4, background: "#f0f0f0", borderRadius: 999 }} />
         <div
@@ -385,7 +408,7 @@ function EffectIntervalChart({
 function RootCauseContributionChart({ rows }: { rows: Array<{ name: string; score: number }> }) {
   if (rows.length === 0) {
     return (
-      <Card size="small" title="Root Cause Candidates">
+      <Card size="small" title={infoTitle("Root Cause Candidates", "표시 가능한 원인 후보 데이터가 없을 때 안내합니다.")}>
         <Empty description="No root cause candidate data" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       </Card>
     );
@@ -394,7 +417,7 @@ function RootCauseContributionChart({ rows }: { rows: Array<{ name: string; scor
   const maxScore = Math.max(...rows.map((row) => row.score), 1);
 
   return (
-    <Card size="small" title="Root Cause Candidates (Contribution)">
+    <Card size="small" title={infoTitle("Root Cause Candidates (Contribution)", "원인 후보별 상대 기여도를 정규화하여 표시합니다.")}>
       <Space direction="vertical" style={{ width: "100%" }}>
         {rows.map((row) => {
           const percent = Math.max(0, Math.min(100, (row.score / maxScore) * 100));
@@ -451,7 +474,7 @@ function TaskResultCharts({
 }) {
   if (!result || typeof result === "string") {
     return (
-      <Card title="Task Result Charts" size="small">
+      <Card title={infoTitle("Task Result Charts", "Task Result JSON의 수치형 항목을 자동 추출해 차트로 보여줍니다.")} size="small">
         <Empty description="Numeric chart data not available" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       </Card>
     );
@@ -463,7 +486,7 @@ function TaskResultCharts({
 
   if (rawRows.length === 0) {
     return (
-      <Card title="Task Result Charts" size="small">
+      <Card title={infoTitle("Task Result Charts", "Task Result JSON의 수치형 항목을 자동 추출해 차트로 보여줍니다.")} size="small">
         <Empty description="No numeric metrics found in result JSON" image={Empty.PRESENTED_IMAGE_SIMPLE} />
       </Card>
     );
@@ -477,7 +500,7 @@ function TaskResultCharts({
 
   return (
     <Card
-      title="Task Result Charts"
+      title={infoTitle("Task Result Charts", "Bar/Line/Table 전환으로 결과 메트릭을 탐색합니다.")}
       size="small"
       extra={
         <Segmented<TaskResultChartType>
@@ -713,39 +736,100 @@ function SummaryCard({
 }
 
 function AuthPanel({
-  token,
-  setToken,
-  role,
-  setRole,
+  loginToken,
+  setLoginToken,
+  sessionToken,
+  onLogin,
+  onLogout,
 }: {
-  token: string;
-  setToken: (v: string) => void;
-  role: Role;
-  setRole: (v: Role) => void;
+  loginToken: string;
+  setLoginToken: (v: string) => void;
+  sessionToken: string;
+  onLogin: () => void;
+  onLogout: () => void;
 }) {
+  const isLoggedIn = sessionToken.trim().length > 0;
+
   return (
     <Card size="small" title={<Space><LockOutlined />Auth Session</Space>}>
       <Space direction="vertical" style={{ width: "100%" }}>
         <Space.Compact style={{ width: "100%" }}>
           <Input.Password
-            placeholder="Bearer token"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
+            placeholder="Paste Bearer token"
+            value={loginToken}
+            onChange={(e) => setLoginToken(e.target.value)}
+            onPressEnter={onLogin}
             data-testid="auth-token-input"
           />
         </Space.Compact>
-        <Space>
-          <Text type="secondary">Role</Text>
-          <Segmented<Role>
-            options={["tenant_admin", "ml_operator", "viewer"]}
-            value={role}
-            onChange={(value) => setRole(value)}
-            data-testid="auth-role-segment"
-          />
+        <Space style={{ justifyContent: "space-between", width: "100%" }}>
+          <Tag color={isLoggedIn ? "green" : "default"}>
+            {isLoggedIn ? "Logged in" : "Logged out"}
+          </Tag>
+          <Space>
+            <Button type="primary" size="small" onClick={onLogin} disabled={!loginToken.trim()}>
+              Login
+            </Button>
+            <Button size="small" onClick={onLogout} disabled={!isLoggedIn}>
+              Logout
+            </Button>
+          </Space>
         </Space>
-        <Text type="secondary">When token has roles claim, token role takes precedence.</Text>
+        <Text type="secondary">Role is managed from Settings menu.</Text>
       </Space>
     </Card>
+  );
+}
+
+function SettingsView({
+  manualRole,
+  setManualRole,
+  activeRole,
+  sessionToken,
+}: {
+  manualRole: Role;
+  setManualRole: (v: Role) => void;
+  activeRole: Role;
+  sessionToken: string;
+}) {
+  const tokenRoles = useMemo(() => decodeRolesFromToken(sessionToken), [sessionToken]);
+
+  return (
+    <Space direction="vertical" style={{ width: "100%" }} size="large">
+      <Card title={infoTitle("Role Management", "기본 역할과 토큰 역할 우선순위를 관리합니다.")}>
+        <Space direction="vertical" style={{ width: "100%" }} size="middle">
+          <Space direction="vertical" style={{ width: "100%" }} size={6}>
+            <Text type="secondary">Manual Role (fallback)</Text>
+            <Segmented<Role>
+              block
+              options={["tenant_admin", "ml_operator", "viewer"]}
+              value={manualRole}
+              onChange={(value) => setManualRole(value)}
+              data-testid="settings-role-segment"
+            />
+          </Space>
+
+          <Alert
+            type="info"
+            showIcon
+            message={`Active role: ${activeRole}`}
+            description="Token에 roles claim이 있으면 token role이 우선 적용됩니다."
+          />
+
+          <Card size="small" title="Token Roles (decoded)">
+            {tokenRoles.length > 0 ? (
+              <Space wrap>
+                {tokenRoles.map((role) => (
+                  <Tag key={role} color="blue">{role}</Tag>
+                ))}
+              </Space>
+            ) : (
+              <Text type="secondary">No role claim found in current session token.</Text>
+            )}
+          </Card>
+        </Space>
+      </Card>
+    </Space>
   );
 }
 
@@ -787,7 +871,7 @@ function DashboardView({ token }: { token: string }) {
         <Col xs={24} md={12} xl={6}><Card><Statistic title="Success Rate" suffix="%" value={data?.metrics.success_rate ?? 0} /></Card></Col>
         <Col xs={24} md={12} xl={6}><Card><Statistic title="Failures" value={data?.metrics.failures ?? 0} /></Card></Col>
       </Row>
-      <Card title="Recent Tasks">
+      <Card title={infoTitle("Recent Tasks", "최근 실행된 태스크의 상태와 메타정보를 확인합니다.")}>
         <Table
           size="small"
           rowKey={(row) => String(row.task_id ?? crypto.randomUUID())}
@@ -896,7 +980,7 @@ function DetectionRunView({ token, role }: { token: string; role: Role }) {
 
   return (
     <Space direction="vertical" style={{ width: "100%" }} size="large">
-      <Card title="Detection Run" data-testid="run-card">
+      <Card title={infoTitle("Detection Run", "CSV 업로드, 모델 설정, 실행 요청을 한 곳에서 처리합니다.")} data-testid="run-card">
         <Space direction="vertical" style={{ width: "100%" }} size="middle">
           <Row gutter={[16, 16]}>
             <Col xs={24} md={12}>
@@ -936,7 +1020,7 @@ function DetectionRunView({ token, role }: { token: string; role: Role }) {
             <Tag color={rows.length > 0 ? "green" : "default"}>rows: {rows.length}</Tag>
           </Space>
 
-          <Card size="small" title="Model Parameters">
+          <Card size="small" title={infoTitle("Model Parameters", "선택한 모델의 파라미터를 동적으로 편집합니다.")}>
             <Row gutter={[12, 12]}>
               {modelSpecs.map((spec) => (
                 <Col xs={24} md={12} key={spec.key}>
@@ -1016,7 +1100,7 @@ function TaskResultView({ token }: { token: string }) {
 
   return (
     <Space direction="vertical" style={{ width: "100%" }}>
-      <Card title="Task Result" data-testid="task-result-card">
+      <Card title={infoTitle("Task Result", "task_id로 실행 결과를 조회하고 분석 차트를 표시합니다.")} data-testid="task-result-card">
         <TaskIdPickerInput
           value={taskId}
           onChange={setTaskId}
@@ -1043,7 +1127,7 @@ function TaskResultView({ token }: { token: string }) {
               />
             </Col>
             <Col xs={24} md={12}>
-              <Card title="Status">
+              <Card title={infoTitle("Status", "현재 태스크 처리 상태를 표시합니다.")}>
                 <Statistic title="Current" value={taskData.status} />
                 <Tag color={taskData.status === "SUCCESS" ? "green" : taskData.status === "FAILURE" ? "red" : "blue"}>
                   {taskData.status}
@@ -1055,6 +1139,22 @@ function TaskResultView({ token }: { token: string }) {
             result={taskData.result}
             chartType={chartType}
             onChangeChartType={setChartType}
+          />
+          {/* 새로운 JSON 시각화 컴포넌트 */}
+          <TaskResultOutlierChart
+            data={
+              taskData as TaskResultData
+            }
+          />
+          <JsonMetricsTable data={taskData.result} />
+          <Collapse
+            items={[
+              {
+                key: "hierarchy",
+                label: "JSON Hierarchy View",
+                children: <JsonHierarchyView data={taskData} title="Task Data Structure" />,
+              },
+            ]}
           />
           <JsonPanel title="Raw Task JSON" value={taskData} />
         </Space>
@@ -1091,7 +1191,7 @@ function CausalReportView({ token }: { token: string }) {
 
   return (
     <Space direction="vertical" style={{ width: "100%" }}>
-      <Card title="Causal Report" data-testid="causal-card">
+      <Card title={infoTitle("Causal Report", "task_id 기준 인과분석 결과를 조회합니다.")} data-testid="causal-card">
         <TaskIdPickerInput
           value={taskId}
           onChange={setTaskId}
@@ -1121,7 +1221,7 @@ function CausalReportView({ token }: { token: string }) {
               />
             </Col>
             <Col xs={24} xl={12}>
-              <Card title="Causal Graph View" size="small">
+              <Card title={infoTitle("Causal Graph View", "Treatment, Outcome, Confounders 관계를 요약해 보여줍니다.")} size="small">
                 <Space direction="vertical" style={{ width: "100%" }}>
                   <Tag color="blue">Treatment: {String(data.treatment ?? "-")}</Tag>
                   <Text style={{ textAlign: "center" }}>↓</Text>
@@ -1144,7 +1244,7 @@ function CausalReportView({ token }: { token: string }) {
             const ciHigh = ci && typeof ci === "object" ? parseNumber((ci as Record<string, unknown>).high) : null;
             if (effect === null || ciLow === null || ciHigh === null) {
               return (
-                <Card size="small" title="Causal Effect + Confidence Interval">
+                <Card size="small" title={infoTitle("Causal Effect + Confidence Interval", "효과 크기 또는 신뢰구간이 없으면 빈 상태를 안내합니다.")}>
                   <Empty description="effect_size/confidence_interval not available" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 </Card>
               );
@@ -1154,7 +1254,7 @@ function CausalReportView({ token }: { token: string }) {
 
           <RootCauseContributionChart rows={parseFeatureContributions(data)} />
 
-          <Card title="Counterfactual / What-if" size="small">
+          <Card title={infoTitle("Counterfactual / What-if", "가정 변경 시나리오별 기대 변화량을 표로 확인합니다.")} size="small">
             {Array.isArray(data.counterfactual_scenarios) && data.counterfactual_scenarios.length > 0 ? (
               <Table
                 size="small"
@@ -1173,6 +1273,20 @@ function CausalReportView({ token }: { token: string }) {
               <Empty description="No counterfactual scenarios" image={Empty.PRESENTED_IMAGE_SIMPLE} />
             )}
           </Card>
+
+          {/* 새로운 Causal Report 시각화 컴포넌트 */}
+          <CausalDagChart data={data as CausalReportData} />
+          <CausalEffectChart data={data as CausalReportData} />
+          <JsonMetricsTable data={data} />
+          <Collapse
+            items={[
+              {
+                key: "hierarchy",
+                label: "Causal JSON Hierarchy",
+                children: <JsonHierarchyView data={data} title="Causal Data Structure" />,
+              },
+            ]}
+          />
 
           <JsonPanel title="Raw Causal JSON" value={data} />
         </Space>
@@ -1209,7 +1323,7 @@ function RecommendationView({ token }: { token: string }) {
 
   return (
     <Space direction="vertical" style={{ width: "100%" }}>
-      <Card title="Action Recommendation" data-testid="action-card">
+      <Card title={infoTitle("Action Recommendation", "탐지/인과 결과 기반 권장 액션을 조회합니다.")} data-testid="action-card">
         <TaskIdPickerInput
           value={taskId}
           onChange={setTaskId}
@@ -1296,6 +1410,7 @@ function App() {
   const isMobile = !screens.lg;
   const [collapsed, setCollapsed] = useState(false);
   const [token, setToken] = useState("");
+  const [loginToken, setLoginToken] = useState("");
   const [manualRole, setManualRole] = useState<Role>("tenant_admin");
   const [nav, setNav] = useState<NavKey>("dashboard");
 
@@ -1308,7 +1423,23 @@ function App() {
     { key: "causal", icon: <ShareAltOutlined />, label: "Causal Report" },
     { key: "recommendation", icon: <ThunderboltOutlined />, label: "Recommendation" },
     { key: "operations", icon: <DeploymentUnitOutlined />, label: "Operations" },
+    { key: "settings", icon: <SettingOutlined />, label: "Settings" },
   ];
+
+  const handleLogin = () => {
+    if (!loginToken.trim()) {
+      message.warning("Please input token before login.");
+      return;
+    }
+    setToken(loginToken.trim());
+    message.success("Session login completed.");
+  };
+
+  const handleLogout = () => {
+    setToken("");
+    setLoginToken("");
+    message.success("Logged out.");
+  };
 
   return (
     <ConfigProvider
@@ -1321,7 +1452,13 @@ function App() {
     >
       <Layout style={{ minHeight: "100vh" }}>
         {!isMobile && (
-          <Sider collapsible collapsed={collapsed} onCollapse={setCollapsed} width={240}>
+          <Sider
+            collapsible
+            collapsed={collapsed}
+            onCollapse={setCollapsed}
+            width={280}
+            style={{ display: "flex", flexDirection: "column" }}
+          >
             <div style={{ color: "white", padding: 16, fontWeight: 700 }}>AnomaliFlow</div>
             <Menu
               theme="dark"
@@ -1330,6 +1467,15 @@ function App() {
               items={menuItems}
               onClick={(e) => setNav(e.key as NavKey)}
             />
+            <div style={{ marginTop: "auto", padding: 12 }}>
+              <AuthPanel
+                loginToken={loginToken}
+                setLoginToken={setLoginToken}
+                sessionToken={token}
+                onLogin={handleLogin}
+                onLogout={handleLogout}
+              />
+            </div>
           </Sider>
         )}
         <Layout>
@@ -1341,13 +1487,29 @@ function App() {
           </Header>
           <Content style={{ margin: 16, paddingBottom: isMobile ? 64 : 0 }}>
             <Space direction="vertical" style={{ width: "100%" }} size="large">
-              <AuthPanel token={token} setToken={setToken} role={manualRole} setRole={setManualRole} />
+              {isMobile && (
+                <AuthPanel
+                  loginToken={loginToken}
+                  setLoginToken={setLoginToken}
+                  sessionToken={token}
+                  onLogin={handleLogin}
+                  onLogout={handleLogout}
+                />
+              )}
               {nav === "dashboard" && <DashboardView token={token} />}
               {nav === "run" && <DetectionRunView token={token} role={activeRole} />}
               {nav === "result" && <TaskResultView token={token} />}
               {nav === "causal" && <CausalReportView token={token} />}
               {nav === "recommendation" && <RecommendationView token={token} />}
               {nav === "operations" && <OperationsView token={token} />}
+              {nav === "settings" && (
+                <SettingsView
+                  manualRole={manualRole}
+                  setManualRole={setManualRole}
+                  activeRole={activeRole}
+                  sessionToken={token}
+                />
+              )}
             </Space>
           </Content>
         </Layout>
@@ -1366,6 +1528,7 @@ function App() {
               { label: "Causal", value: "causal" },
               { label: "Action", value: "recommendation" },
               { label: "Ops", value: "operations" },
+              { label: "Set", value: "settings" },
             ]}
           />
         </Card>
